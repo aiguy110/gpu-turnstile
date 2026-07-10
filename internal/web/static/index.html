@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>turnstile console</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #f0f2f5;
+    --border: #d9dee5;
+    --text: #1c2230;
+    --muted: #64707f;
+    --accent: #2f6fed;
+    --accent-soft: #e5eefc;
+    --green: #1f9d55;
+    --amber: #c77700;
+    --red: #d23b3b;
+    --llm: #6c4ce0;
+    --lease: #0d8a8a;
+    --shadow: 0 1px 2px rgba(20,30,50,.06), 0 4px 14px rgba(20,30,50,.05);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116;
+      --panel: #171b22;
+      --panel-2: #1e242d;
+      --border: #2b333f;
+      --text: #e6e9ee;
+      --muted: #8b96a5;
+      --accent: #5a8dff;
+      --accent-soft: #1b2740;
+      --green: #3ecf7a;
+      --amber: #e0a13a;
+      --red: #f0605f;
+      --llm: #a58cff;
+      --lease: #3ec7c7;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 18px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 22px; border-bottom: 1px solid var(--border);
+    background: var(--panel); position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  .conn { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 25%, transparent); }
+  .dot.poll { background: var(--amber); }
+  .dot.down { background: var(--red); }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px; display: grid; gap: 18px; }
+  .grid { display: grid; grid-template-columns: minmax(280px, 1fr) 2fr; gap: 18px; align-items: start; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .panel > h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+    margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 650;
+  }
+  .panel .body { padding: 16px; }
+  .holder-idle { color: var(--muted); font-style: italic; padding: 6px 0; }
+  .holder-name { font-size: 20px; font-weight: 650; display: flex; align-items: center; gap: 10px; }
+  .held { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
+    padding: 3px 9px; border-radius: 999px; background: var(--panel-2);
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .chip b { color: var(--text); font-weight: 600; }
+  .kind { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+          padding: 2px 8px; border-radius: 6px; }
+  .kind.llm { color: var(--llm); background: color-mix(in srgb, var(--llm) 16%, transparent); }
+  .kind.lease { color: var(--lease); background: color-mix(in srgb, var(--lease) 16%, transparent); }
+  .prio-pill { font-family: var(--mono); font-size: 12px; padding: 2px 7px; border-radius: 6px;
+    background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--muted); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  tbody td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr.revoke { background: color-mix(in srgb, var(--red) 10%, transparent); }
+  .pos { font-family: var(--mono); color: var(--muted); }
+  .wait { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .state { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+  .revoke-tag { font-size: 10px; font-weight: 700; color: var(--red); text-transform: uppercase;
+    border: 1px solid var(--red); border-radius: 5px; padding: 1px 5px; margin-left: 6px; }
+  .empty { color: var(--muted); font-style: italic; padding: 14px 10px; }
+
+  form.mint { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-top: 14px;
+    padding-top: 14px; border-top: 1px solid var(--border); }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  input {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 7px 9px; font: inherit; min-width: 0;
+  }
+  input[type=number] { width: 90px; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+    padding: 7px 13px;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--border)); padding: 4px 10px; font-size: 12px; }
+  button:hover { filter: brightness(1.05); }
+  button:disabled { opacity: .5; cursor: default; }
+
+  .secret {
+    margin-top: 12px; padding: 12px 14px; border-radius: 10px;
+    background: color-mix(in srgb, var(--green) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--green) 45%, var(--border));
+  }
+  .secret .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--green); font-weight: 700; }
+  .secret code { display: block; font-family: var(--mono); font-size: 13px; word-break: break-all;
+    margin: 6px 0; user-select: all; }
+  .secret small { color: var(--muted); }
+  .err { color: var(--red); font-size: 12px; margin-top: 8px; min-height: 1em; }
+  .updated { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>turnstile</h1>
+    <div class="sub">GPU access console</div>
+  </div>
+  <div class="conn">
+    <span id="updated" class="updated"></span>
+    <span id="dot" class="dot"></span>
+    <span id="conn-label">connecting…</span>
+  </div>
+</header>
+
+<main>
+  <div class="grid">
+    <section class="panel" id="holder-panel">
+      <h2>GPU holder</h2>
+      <div class="body" id="holder-body">
+        <div class="holder-idle">idle</div>
+        <div class="meta" id="warm-meta"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Pending queue</h2>
+      <div class="body" style="padding:0">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:44px">#</th>
+              <th>Name</th>
+              <th>Kind</th>
+              <th>Prio</th>
+              <th>State</th>
+              <th style="text-align:right">Wait</th>
+            </tr>
+          </thead>
+          <tbody id="pending-body">
+            <tr><td colspan="6" class="empty">no waiters</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>Keys</h2>
+    <div class="body">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Priority</th>
+            <th>Created</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="keys-body">
+          <tr><td colspan="4" class="empty">no keys</td></tr>
+        </tbody>
+      </table>
+
+      <form class="mint" id="mint-form">
+        <div class="field">
+          <label for="k-name">Name</label>
+          <input id="k-name" name="name" placeholder="e.g. pi" autocomplete="off" required>
+        </div>
+        <div class="field">
+          <label for="k-prio">Priority</label>
+          <input id="k-prio" name="priority" type="number" value="0" step="1">
+        </div>
+        <button class="primary" type="submit">Mint key</button>
+      </form>
+      <div class="err" id="mint-err"></div>
+      <div id="secret-box"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var latest = null;        // last snapshot
+  var latestReceived = 0;   // ms epoch when received (client clock)
+  var es = null;
+  var pollTimer = null;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function fmtDuration(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    if (h > 0) return h + "h " + m + "m " + s + "s";
+    if (m > 0) return m + "m " + s + "s";
+    return s + "s";
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return "—";
+    var d = new Date(iso);
+    if (isNaN(d)) return "—";
+    return d.toLocaleString();
+  }
+
+  // Age in seconds of an ISO timestamp relative to snapshot time, kept
+  // smooth by adding the drift since we received the snapshot.
+  function ageSeconds(iso) {
+    if (!iso) return 0;
+    var t = new Date(iso).getTime();
+    if (isNaN(t)) return 0;
+    var drift = (Date.now() - latestReceived) / 1000;
+    var base = latest && latest.updated_at ? new Date(latest.updated_at).getTime() : latestReceived;
+    return (base - t) / 1000 + drift;
+  }
+
+  function kindTag(kind) {
+    var k = kind === "llm" ? "llm" : "lease";
+    return '<span class="kind ' + k + '">' + esc(k) + '</span>';
+  }
+
+  function setConn(mode) {
+    var dot = $("dot"), label = $("conn-label");
+    dot.className = "dot " + mode;
+    label.textContent = mode === "live" ? "live stream"
+      : mode === "poll" ? "polling"
+      : mode === "down" ? "disconnected" : "connecting…";
+  }
+
+  function renderHolder() {
+    var body = $("holder-body");
+    var warm = "";
+    if (latest && latest.warm_model) {
+      warm += '<span class="chip">warm model <b>' + esc(latest.warm_model) + '</b></span>';
+    } else {
+      warm += '<span class="chip">warm model <b>none</b></span>';
+    }
+    warm += '<span class="chip">warm tier <b>' + esc(latest ? latest.warm_tier : 0) + '</b></span>';
+
+    var h = latest && latest.holder;
+    var html;
+    if (!h) {
+      html = '<div class="holder-idle">GPU idle</div>';
+    } else {
+      var held = h.granted_at ? fmtDuration(ageSeconds(h.granted_at)) : "—";
+      html =
+        '<div class="holder-name">' + esc(h.name) + ' ' + kindTag(h.kind) +
+        (h.revoke_requested ? '<span class="revoke-tag">revoking</span>' : '') + '</div>' +
+        '<div class="held">holding for <span class="wait" data-granted="' + esc(h.granted_at || "") + '">' + held + '</span></div>' +
+        '<div class="meta">' +
+          '<span class="chip">priority <span class="prio-pill">' + esc(h.priority) + '</span></span>' +
+          (h.model ? '<span class="chip">model <b>' + esc(h.model) + '</b></span>' : '') +
+          '<span class="chip state">' + esc(h.state) + '</span>' +
+        '</div>';
+    }
+    body.innerHTML = html + '<div class="meta" id="warm-meta">' + warm + '</div>';
+  }
+
+  function renderPending() {
+    var tb = $("pending-body");
+    var list = (latest && latest.pending) || [];
+    if (!list.length) {
+      tb.innerHTML = '<tr><td colspan="6" class="empty">no waiters</td></tr>';
+      return;
+    }
+    var rows = list.map(function (w) {
+      var wait = fmtDuration(ageSeconds(w.enqueued_at));
+      return '<tr class="' + (w.revoke_requested ? "revoke" : "") + '">' +
+        '<td class="pos">' + esc(w.position) + '</td>' +
+        '<td>' + esc(w.name) +
+          (w.revoke_requested ? '<span class="revoke-tag">revoke</span>' : '') +
+          (w.model ? '<div class="state">' + esc(w.model) + '</div>' : '') + '</td>' +
+        '<td>' + kindTag(w.kind) + '</td>' +
+        '<td><span class="prio-pill">' + esc(w.priority) + '</span></td>' +
+        '<td class="state">' + esc(w.state) + '</td>' +
+        '<td class="wait" style="text-align:right" data-enq="' + esc(w.enqueued_at) + '">' + wait + '</td>' +
+        '</tr>';
+    });
+    tb.innerHTML = rows.join("");
+  }
+
+  function renderUpdated() {
+    if (latest && latest.updated_at) {
+      $("updated").textContent = "updated " + fmtDate(latest.updated_at);
+    }
+  }
+
+  function render() {
+    renderHolder();
+    renderPending();
+    renderUpdated();
+  }
+
+  // Smoothly tick the counters between snapshots without a full re-render.
+  function tickCounters() {
+    if (!latest) return;
+    document.querySelectorAll("[data-enq]").forEach(function (el) {
+      el.textContent = fmtDuration(ageSeconds(el.getAttribute("data-enq")));
+    });
+    document.querySelectorAll("[data-granted]").forEach(function (el) {
+      var g = el.getAttribute("data-granted");
+      if (g) el.textContent = fmtDuration(ageSeconds(g));
+    });
+  }
+
+  function applySnapshot(snap) {
+    latest = snap;
+    latestReceived = Date.now();
+    render();
+  }
+
+  // ---- live updates: EventSource, degrading to polling ----
+  function startPolling() {
+    if (pollTimer) return;
+    setConn("poll");
+    var poll = function () {
+      fetch("/api/queue", { cache: "no-store" })
+        .then(function (r) { return r.json(); })
+        .then(applySnapshot)
+        .catch(function () { setConn("down"); });
+    };
+    poll();
+    pollTimer = setInterval(poll, 1500);
+  }
+
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  function startStream() {
+    if (!window.EventSource) { startPolling(); return; }
+    try {
+      es = new EventSource("/api/queue/stream");
+    } catch (e) { startPolling(); return; }
+
+    es.onopen = function () { stopPolling(); setConn("live"); };
+    es.onmessage = function (ev) {
+      try { applySnapshot(JSON.parse(ev.data)); setConn("live"); } catch (e) {}
+    };
+    es.onerror = function () {
+      // Browser auto-reconnects EventSource; meanwhile fall back to polling
+      // so the console keeps updating.
+      setConn("poll");
+      startPolling();
+    };
+  }
+
+  // ---- keys ----
+  function loadKeys() {
+    fetch("/api/keys", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(renderKeys)
+      .catch(function () {});
+  }
+
+  function renderKeys(keys) {
+    var tb = $("keys-body");
+    if (!keys || !keys.length) {
+      tb.innerHTML = '<tr><td colspan="4" class="empty">no keys</td></tr>';
+      return;
+    }
+    tb.innerHTML = keys.map(function (k) {
+      return '<tr>' +
+        '<td><b>' + esc(k.name) + '</b></td>' +
+        '<td><span class="prio-pill">' + esc(k.priority || 0) + '</span></td>' +
+        '<td class="state">' + fmtDate(k.created) + '</td>' +
+        '<td style="text-align:right"><button class="danger" data-revoke="' + esc(k.name) + '">Revoke</button></td>' +
+        '</tr>';
+    }).join("");
+  }
+
+  $("keys-body").addEventListener("click", function (ev) {
+    var btn = ev.target.closest("button[data-revoke]");
+    if (!btn) return;
+    var name = btn.getAttribute("data-revoke");
+    if (!confirm('Revoke key "' + name + '"?')) return;
+    btn.disabled = true;
+    fetch("/api/keys/" + encodeURIComponent(name), { method: "DELETE" })
+      .then(function (r) {
+        if (r.status === 204) { loadKeys(); }
+        else { btn.disabled = false; alert("Revoke failed (" + r.status + ")"); }
+      })
+      .catch(function () { btn.disabled = false; alert("Revoke failed"); });
+  });
+
+  $("mint-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    $("mint-err").textContent = "";
+    $("secret-box").innerHTML = "";
+    var name = $("k-name").value.trim();
+    var prio = parseInt($("k-prio").value, 10) || 0;
+    if (!name) { $("mint-err").textContent = "Name is required."; return; }
+    var btn = ev.target.querySelector("button");
+    btn.disabled = true;
+    fetch("/api/keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, priority: prio })
+    }).then(function (r) {
+      return r.json().then(function (data) { return { status: r.status, data: data }; });
+    }).then(function (res) {
+      btn.disabled = false;
+      if (res.status === 201) {
+        $("k-name").value = "";
+        showSecret(res.data);
+        loadKeys();
+      } else {
+        $("mint-err").textContent = (res.data && res.data.error) || ("Mint failed (" + res.status + ")");
+      }
+    }).catch(function () {
+      btn.disabled = false;
+      $("mint-err").textContent = "Mint failed.";
+    });
+  });
+
+  function showSecret(info) {
+    $("secret-box").innerHTML =
+      '<div class="secret">' +
+        '<div class="lbl">New key for ' + esc(info.name) + ' — copy it now, shown once</div>' +
+        '<code>' + esc(info.key || "") + '</code>' +
+        '<small>priority ' + esc(info.priority || 0) + '</small>' +
+      '</div>';
+  }
+
+  // ---- boot ----
+  startStream();
+  loadKeys();
+  setInterval(tickCounters, 1000);
+})();
+</script>
+</body>
+</html>
