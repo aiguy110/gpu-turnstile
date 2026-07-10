@@ -15,3 +15,4 @@ keys.db
 # Editor / OS
 .DS_Store
 *.swp
+.keys.env
