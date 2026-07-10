@@ -71,13 +71,16 @@ package types
 // lease OR an LLM needing a different model. Let W = WarmTier and P = priority of
 // the pending waiter:
 //   - No pending waiter                -> never unload; model stays warm.
-//   - Pending waiter with P <= W       -> keep warm until TTL.GraceSeconds have
+//   - Pending waiter with P <  W       -> keep warm until TTL.GraceSeconds have
 //                                         elapsed since the last LLM request
 //                                         completed; any new LLM request from a
 //                                         tier >= W resets that timer; on expiry,
 //                                         Evictor.Unload(warmModel) then grant.
-//   - Pending waiter with P >  W       -> grace collapses to 0: Evictor.Unload
-//                                         immediately, then grant.
+//   - Pending waiter with P >= W       -> grace collapses to 0: Evictor.Unload
+//                                         immediately, then grant. (Equal tier is
+//                                         that tier itself moving on; holding its
+//                                         own stale warm model would only block
+//                                         it — e.g. pi switching models.)
 //   - Optional: TTL.IdleFloorSeconds>0 -> unload after that much total silence
 //                                         even with nothing pending.
 //

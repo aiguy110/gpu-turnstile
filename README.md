@@ -25,8 +25,10 @@ It presents two front doors over the same queue:
 - **Demand-driven dynamic TTL:** the resident LLM model stays warm indefinitely
   while nothing is waiting. Once a competitor is pending, a configurable grace
   TTL protects multi-call agent turns before the model is evicted (via
-  llama-swap's synchronous `POST /api/models/unload/{model}`); a strictly
-  higher-priority waiter collapses that grace to zero.
+  llama-swap's synchronous `POST /api/models/unload/{model}`). Only a *strictly
+  lower*-priority waiter waits out that grace; an equal-or-higher-priority waiter
+  collapses it to zero (so a client never blocks behind its own stale warm cache
+  when switching models).
 
 ## Layout
 

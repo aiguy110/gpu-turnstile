@@ -204,6 +204,27 @@ func TestImmediateEvictionForHigherPriority(t *testing.T) {
 	}
 }
 
+func TestEqualTierDifferentModelEvictsImmediately(t *testing.T) {
+	// Regression: a waiter at the SAME tier as the warm model, needing a
+	// DIFFERENT model, must not wait out the grace window (keeping the old model
+	// warm serves no one). It should evict immediately, like a higher tier.
+	s, _, ev := newTestScheduler(t, testConfig())
+	m := s.Acquire(llm("m", 40, "m1"))
+	if !isGranted(m) {
+		t.Fatal("llm should be granted")
+	}
+	m.Release() // warm m1 @ tier 40
+
+	// Equal-tier (40) LLM wanting a different model m2 -> immediate eviction.
+	m2 := s.Acquire(llm("m2", 40, "m2"))
+	if !isGranted(m2) {
+		t.Fatal("equal-tier different-model waiter should be granted immediately, not held for grace")
+	}
+	if calls := ev.calls(); len(calls) != 1 || calls[0] != "m1" {
+		t.Fatalf("expected immediate Unload(m1), got %v", calls)
+	}
+}
+
 func TestGraceWindowHoldsLowerTierWaiter(t *testing.T) {
 	s, clk, ev := newTestScheduler(t, testConfig())
 	m := s.Acquire(llm("m", 10, "m1"))

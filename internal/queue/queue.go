@@ -115,6 +115,7 @@ type scheduler struct {
 	warmModel       types.Model
 	warmTier        types.Priority
 	lastLLMComplete time.Time
+	deferredID      string // id of the waiter we last logged a grace-deferral for
 }
 
 // New constructs the scheduler and starts its owner goroutine. Signature is
@@ -209,6 +210,8 @@ func (s *scheduler) Acquire(spec types.AcquireSpec) types.Ticket {
 		t.lastHeartbeat = now
 		t.state = types.StateQueued
 		s.pending = append(s.pending, t)
+		s.log.Info("enqueued", "id", t.id, "name", t.name, "kind", t.kind,
+			"priority", t.priority, "model", t.model)
 		s.reconcile()
 	})
 	return t
@@ -339,11 +342,35 @@ func (s *scheduler) tryAdmit(now time.Time) {
 	front := s.serviceOrder()[0]
 	if s.needsEviction(front) {
 		if !s.canEvictNow(front, now) {
+			s.logDefer(front, now)
 			return // keep the model warm; a later tick will re-check
 		}
-		s.unloadWarm(now)
+		reason := "grace-expired"
+		if front.priority >= s.warmTier {
+			reason = "equal-or-higher-priority-waiter"
+		}
+		s.unloadWarm(now, reason)
 	}
 	s.grant(front, now)
+}
+
+// logDefer emits one line the first time we defer a given waiter, so a request
+// that sits waiting has a visible reason (and an ETA) in the log rather than
+// silently blocking. Throttled by deferredID to avoid spamming every tick.
+func (s *scheduler) logDefer(front *ticket, now time.Time) {
+	if s.deferredID == front.id {
+		return
+	}
+	s.deferredID = front.id
+	grace := time.Duration(s.cfg.TTL.GraceSeconds) * time.Second
+	remaining := grace - now.Sub(s.lastLLMComplete)
+	if remaining < 0 {
+		remaining = 0
+	}
+	s.log.Info("deferring grant to keep model warm",
+		"waiter", front.id, "waiter_name", front.name, "waiter_priority", front.priority,
+		"warm_model", s.warmModel, "warm_tier", s.warmTier,
+		"grace_remaining", remaining.Round(time.Second).String())
 }
 
 // needsEviction reports whether granting front requires unloading the warm
@@ -359,9 +386,15 @@ func (s *scheduler) needsEviction(front *ticket) bool {
 }
 
 // canEvictNow applies the grace policy. W = warmTier, P = front priority.
+// Only a STRICTLY LOWER priority waiter (P < W) has to wait out the grace window
+// that protects the warm tier's potential follow-up call. A waiter at the same
+// tier (P == W) is that tier itself moving on — if it needs a different model,
+// keeping the old one warm serves no one, so it evicts immediately, exactly like
+// a higher-priority waiter. (This is what stops pi from ever blocking behind its
+// own stale warm cache when it switches models.)
 func (s *scheduler) canEvictNow(front *ticket, now time.Time) bool {
-	if front.priority > s.warmTier {
-		return true // grace collapses to zero
+	if front.priority >= s.warmTier {
+		return true // equal-or-higher tier: grace collapses to zero
 	}
 	grace := time.Duration(s.cfg.TTL.GraceSeconds) * time.Second
 	return now.Sub(s.lastLLMComplete) >= grace
@@ -373,16 +406,16 @@ func (s *scheduler) maybeIdleFloor(now time.Time) {
 		return
 	}
 	if now.Sub(s.lastLLMComplete) >= time.Duration(fl)*time.Second {
-		s.unloadWarm(now)
+		s.unloadWarm(now, "idle-floor")
 	}
 }
 
-func (s *scheduler) unloadWarm(now time.Time) {
+func (s *scheduler) unloadWarm(now time.Time, reason string) {
 	m := s.warmModel
 	if m == "" {
 		return
 	}
-	s.log.Info("unloading warm model", "model", m)
+	s.log.Info("unloading warm model", "model", m, "reason", reason)
 	if err := s.ev.Unload(context.Background(), m); err != nil {
 		s.log.Warn("unload failed", "model", m, "err", err)
 	}
@@ -406,8 +439,11 @@ func (s *scheduler) grant(t *ticket, now time.Time) {
 		s.warmModel = t.model
 		s.warmTier = t.priority
 	}
+	s.deferredID = ""
 	close(t.granted)
-	s.log.Info("granted", "id", t.id, "kind", t.kind, "priority", t.priority, "model", t.model)
+	s.log.Info("granted", "id", t.id, "name", t.name, "kind", t.kind,
+		"priority", t.priority, "model", t.model,
+		"waited", now.Sub(t.enqueuedAt).Round(time.Millisecond).String())
 }
 
 // releaseTicket is idempotent and removes the ticket whether queued or granted.
