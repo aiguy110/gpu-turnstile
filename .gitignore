@@ -1,0 +1,17 @@
+# Binaries
+/turnstile
+/dist/
+*.exe
+
+# Local runtime state / secrets
+/config.yaml
+*.local.yaml
+keys.db
+*.log
+
+# Go
+/vendor/
+
+# Editor / OS
+.DS_Store
+*.swp

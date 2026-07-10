@@ -1,0 +1,54 @@
+# turnstile configuration — copy to config.yaml and edit.
+
+# Address turnstile listens on (OpenAI proxy + lease API + web console).
+listen: ":8080"
+
+# Upstream llama-swap (the OpenAI-compatible model-swapping server turnstile
+# fronts). Its own model TTLs should be set to never-auto-unload so turnstile
+# owns eviction timing.
+llamaSwap:
+  baseUrl: "http://localhost:11434"
+  # Endpoint used to evict the resident model and free VRAM. Synchronous:
+  # blocks until the upstream process exits.
+  unloadPath: "/api/models/unload/{model}"
+
+# Dynamic-TTL knobs (see README).
+ttl:
+  # Grace window a warm model is kept for a pending waiter of priority <= the
+  # warm tier, so multi-call agent turns aren't evicted between calls. Reset by
+  # any new LLM request from a tier >= the warm tier.
+  graceSeconds: 300
+  # Optional absolute idle floor: unload after this much total silence even with
+  # nothing pending (frees VRAM for the desktop). 0 = never.
+  idleFloorSeconds: 0
+
+# Cooperative preemption: how long to wait for a lower-priority lease holder to
+# honor revoke_requested before proceeding once its heartbeat TTL lapses.
+preemption:
+  graceSeconds: 30
+
+# Lease heartbeat: a granted/queued lease with no heartbeat within this window
+# is considered dead and reaped.
+lease:
+  heartbeatTimeoutSeconds: 30
+  pollAfterMs: 1000
+
+# Priority tiers. Higher number = higher priority. Anonymous (unknown/missing
+# key) is admitted at anonymousPriority (below every named key by default).
+anonymousPriority: 0
+
+# API keys → priority. Mint/rotate these from the web console; this file is the
+# seed. Keep real keys out of git (config.yaml is gitignored).
+keys:
+  - name: pi
+    priority: 40
+    key: "REPLACE_ME_pi"
+  - name: xad-pod
+    priority: 30
+    key: "REPLACE_ME_xadpod"
+  - name: slam-nerf
+    priority: 20
+    key: "REPLACE_ME_slamnerf"
+  - name: hermes
+    priority: 10
+    key: "REPLACE_ME_hermes"
