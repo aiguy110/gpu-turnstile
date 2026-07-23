@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -61,9 +62,10 @@ func run(configPath string, log *slog.Logger) error {
 	}
 	evictor := llamaswap.New(cfg.LlamaSwap, log)
 	sched := queue.New(types.SchedulerConfig{
-		TTL:        cfg.TTL,
-		Preemption: cfg.Preemption,
-		Lease:      cfg.Lease,
+		TTL:         cfg.TTL,
+		Preemption:  cfg.Preemption,
+		Lease:       cfg.Lease,
+		HistoryPath: cfg.HistoryLog,
 	}, evictor, log)
 
 	proxyH := proxy.New(sched, ks, cfg.LlamaSwap, log)
@@ -144,6 +146,15 @@ func loadConfig(path string) (types.Config, error) {
 	}
 	if cfg.Lease.PollAfterMs == 0 {
 		cfg.Lease.PollAfterMs = 1000
+	}
+	// Default the timeline history log to sit next to the config file. An
+	// explicit "none" (or "-") disables persistence.
+	switch cfg.HistoryLog {
+	case "":
+		dir := filepath.Dir(path)
+		cfg.HistoryLog = filepath.Join(dir, "history.jsonl")
+	case "none", "-":
+		cfg.HistoryLog = ""
 	}
 	return cfg, nil
 }

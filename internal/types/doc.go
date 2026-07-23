@@ -30,7 +30,7 @@ package types
 //
 //	proxy:  "/v1/"                       OpenAI-compatible endpoints (chat/completions, models, ...)
 //	lease:  "/lease" and "/lease/"       the cooperative lease API (see below)
-//	web:    "/"                          console UI, plus "/api/keys", "/api/queue", "/api/queue/stream"
+//	web:    "/"                          console UI, plus "/api/keys", "/api/queue", "/api/queue/stream", "/api/history"
 //
 // The lease API surface (all JSON)
 // --------------------------------

@@ -117,6 +117,18 @@ type QueueSnapshot struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// HoldRecord is one GPU hold (a granted acquisition) for the timeline view.
+// A record with a zero EndedAt is still in progress (the current holder).
+type HoldRecord struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Priority  Priority  `json:"priority"`
+	Kind      Kind      `json:"kind"`
+	Model     Model     `json:"model,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	EndedAt   time.Time `json:"ended_at,omitzero"`
+}
+
 // Scheduler owns the single GPU priority queue. Implemented by package queue;
 // its concrete constructor is queue.New (see doc.go). A single internal
 // goroutine serializes all state, so the interface is safe for concurrent use.
@@ -128,6 +140,10 @@ type Scheduler interface {
 	// Snapshot returns the current holder + ordered pending list + warm-model
 	// state for display.
 	Snapshot() QueueSnapshot
+	// History returns completed GPU holds that ended at or after `since`,
+	// oldest first, plus the current holder as an open record (zero EndedAt).
+	// Used by the console timeline.
+	History(since time.Time) []HoldRecord
 	// Shutdown stops the scheduler goroutine, releasing any holder.
 	Shutdown(ctx context.Context) error
 }
@@ -181,6 +197,10 @@ type Config struct {
 	Lease             LeaseCfg      `yaml:"lease"`
 	AnonymousPriority Priority      `yaml:"anonymousPriority"`
 	Keys              []KeyInfo     `yaml:"keys"`
+	// HistoryLog is the path to the append-only JSONL file the scheduler
+	// persists completed GPU holds to (for the console timeline). Defaults to
+	// "history.jsonl" next to the config file; set "" to disable persistence.
+	HistoryLog string `yaml:"historyLog"`
 }
 
 // LlamaSwapCfg configures the upstream llama-swap fronted by the proxy/evictor.
@@ -213,4 +233,7 @@ type SchedulerConfig struct {
 	TTL        TTLCfg
 	Preemption PreemptionCfg
 	Lease      LeaseCfg
+	// HistoryPath, if non-empty, is the JSONL file completed holds are
+	// persisted to and reloaded from on startup.
+	HistoryPath string
 }

@@ -56,8 +56,9 @@ func (s *fakeScheduler) Acquire(spec types.AcquireSpec) types.Ticket {
 	return s.ticket
 }
 
-func (s *fakeScheduler) Snapshot() types.QueueSnapshot      { return types.QueueSnapshot{} }
-func (s *fakeScheduler) Shutdown(ctx context.Context) error { return nil }
+func (s *fakeScheduler) Snapshot() types.QueueSnapshot        { return types.QueueSnapshot{} }
+func (s *fakeScheduler) History(time.Time) []types.HoldRecord { return nil }
+func (s *fakeScheduler) Shutdown(ctx context.Context) error   { return nil }
 func (s *fakeScheduler) spec() types.AcquireSpec {
 	s.mu.Lock()
 	defer s.mu.Unlock()

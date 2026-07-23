@@ -37,6 +37,7 @@ func New(sched types.Scheduler, ks types.KeyStore, log *slog.Logger) *Handler {
 	mux.HandleFunc("GET /", h.handleIndex)
 	mux.HandleFunc("GET /api/queue", h.handleQueue)
 	mux.HandleFunc("GET /api/queue/stream", h.handleQueueStream)
+	mux.HandleFunc("GET /api/history", h.handleHistory)
 	mux.HandleFunc("GET /api/keys", h.handleListKeys)
 	mux.HandleFunc("POST /api/keys", h.handleMintKey)
 	mux.HandleFunc("DELETE /api/keys/{nameOrKey}", h.handleRevokeKey)
@@ -120,6 +121,39 @@ func (h *Handler) handleQueueStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+}
+
+// handleHistory returns GPU holds for the timeline. The window to look back is
+// given by ?window=1h|1d|7d (default 1d) or an explicit ?since=<RFC3339>.
+func (h *Handler) handleHistory(w http.ResponseWriter, r *http.Request) {
+	since := time.Now().Add(-24 * time.Hour)
+	q := r.URL.Query()
+	if s := q.Get("since"); s != "" {
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			since = t
+		}
+	} else if d, ok := parseWindow(q.Get("window")); ok {
+		since = time.Now().Add(-d)
+	}
+	recs := h.sched.History(since)
+	if recs == nil {
+		recs = []types.HoldRecord{}
+	}
+	h.writeJSON(w, http.StatusOK, recs)
+}
+
+// parseWindow maps the console's window labels to durations.
+func parseWindow(win string) (time.Duration, bool) {
+	switch win {
+	case "1h":
+		return time.Hour, true
+	case "1d":
+		return 24 * time.Hour, true
+	case "7d":
+		return 7 * 24 * time.Hour, true
+	default:
+		return 0, false
 	}
 }
 

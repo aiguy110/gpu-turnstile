@@ -19,10 +19,12 @@ import (
 
 type fakeScheduler struct {
 	snap types.QueueSnapshot
+	hist []types.HoldRecord
 }
 
 func (f *fakeScheduler) Acquire(spec types.AcquireSpec) types.Ticket { return nil }
 func (f *fakeScheduler) Snapshot() types.QueueSnapshot               { return f.snap }
+func (f *fakeScheduler) History(time.Time) []types.HoldRecord        { return f.hist }
 func (f *fakeScheduler) Shutdown(ctx context.Context) error          { return nil }
 
 type fakeKeyStore struct {

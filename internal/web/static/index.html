@@ -130,6 +130,34 @@
   .secret small { color: var(--muted); }
   .err { color: var(--red); font-size: 12px; margin-top: 8px; min-height: 1em; }
   .updated { color: var(--muted); font-size: 11px; }
+
+  /* ---- timeline ---- */
+  #timeline-panel > h2 { display: flex; align-items: center; gap: 12px; }
+  .tl-controls { margin-left: auto; display: flex; align-items: center; gap: 8px;
+    text-transform: none; letter-spacing: 0; }
+  .tl-windows { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .tl-windows button { border: 0; border-radius: 0; background: var(--panel); color: var(--muted);
+    padding: 4px 11px; font-size: 12px; font-weight: 600; border-right: 1px solid var(--border); }
+  .tl-windows button:last-child { border-right: 0; }
+  .tl-windows button.active { background: var(--accent); color: #fff; }
+  .tl-now { padding: 4px 11px; font-size: 12px; }
+  .tl-now:disabled { opacity: .45; }
+  #tl-wrap { position: relative; padding: 12px 16px 4px; }
+  #tl-canvas { display: block; width: 100%; height: 104px; cursor: grab; touch-action: none; }
+  #tl-canvas.drag { cursor: grabbing; }
+  .tl-tip { position: fixed; pointer-events: none; z-index: 2147483647; max-width: 260px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: var(--shadow); padding: 8px 10px; font-size: 12px; transform: translate(-50%, 0); }
+  .tl-tip .tl-tip-name { font-weight: 650; display: flex; align-items: center; gap: 7px; }
+  .tl-tip .sw { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+  .tl-tip dl { margin: 6px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+  .tl-tip dt { color: var(--muted); }
+  .tl-tip dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .tl-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 16px 14px; }
+  .tl-legend .lg { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .tl-legend .sw { width: 11px; height: 11px; border-radius: 3px; }
+  .tl-legend .lg b { color: var(--text); font-weight: 600; }
+  .tl-hint { color: var(--muted); font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: 0; }
 </style>
 </head>
 <body>
@@ -146,6 +174,28 @@
 </header>
 
 <main>
+  <section class="panel" id="timeline-panel">
+    <h2>
+      GPU timeline
+      <span class="tl-hint">drag to pan</span>
+      <span class="tl-controls">
+        <span class="tl-windows" id="tl-windows">
+          <button data-win="1h">1h</button>
+          <button data-win="1d" class="active">1d</button>
+          <button data-win="7d">7d</button>
+        </span>
+        <button class="tl-now" id="tl-now" disabled>now ▸</button>
+      </span>
+    </h2>
+    <div class="body" style="padding:0">
+      <div id="tl-wrap">
+        <canvas id="tl-canvas"></canvas>
+        <div class="tl-tip" id="tl-tip" hidden></div>
+      </div>
+      <div class="tl-legend" id="tl-legend"></div>
+    </div>
+  </section>
+
   <div class="grid">
     <section class="panel" id="holder-panel">
       <h2>GPU holder</h2>
@@ -347,6 +397,7 @@
     latest = snap;
     latestReceived = Date.now();
     render();
+    try { Timeline.setLive(snap); } catch (e) {}
   }
 
   // ---- live updates: EventSource, degrading to polling ----
@@ -462,7 +513,307 @@
       '</div>';
   }
 
+  // ---- timeline ----
+  var Timeline = (function () {
+    var WINDOWS = { "1h": 3600e3, "1d": 86400e3, "7d": 604800e3 };
+    var MAX_SPAN = WINDOWS["7d"]; // furthest back we keep/fetch history for
+    var PALETTE = ["#5a8dff", "#3ecf7a", "#e0a13a", "#f0605f", "#a58cff",
+                   "#3ec7c7", "#e06fb4", "#8bc34a", "#ff8a5b", "#7a88c9"];
+    var PAD_L = 16, PAD_R = 16;      // canvas horizontal padding (CSS px)
+    var TRACK_TOP = 12, TRACK_H = 46, AXIS_Y = TRACK_TOP + TRACK_H;
+
+    var canvas, ctx, tip, legendEl, nowBtn, winWrap;
+    var completed = [];   // {id,name,priority,kind,model,start,end}
+    var liveOpen = null;  // current holder as an open record (end == null)
+    var windowMs = WINDOWS["1d"];
+    var viewEnd = Date.now();
+    var follow = true;
+    var dpr = 1, cssW = 0, cssH = 0, plotW = 0;
+    var drawn = [];       // hit-test rects: {x0,x1,rec}
+    var dragging = false, dragStartX = 0, dragStartEnd = 0, moved = false;
+
+    function colorFor(name) {
+      var h = 0, s = String(name || "");
+      for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+      return PALETTE[h % PALETTE.length];
+    }
+
+    function toMs(iso) { var t = iso ? new Date(iso).getTime() : NaN; return isNaN(t) ? null : t; }
+
+    function normalize(r) {
+      return { id: r.id, name: r.name, priority: r.priority, kind: r.kind,
+               model: r.model || "", start: toMs(r.started_at), end: toMs(r.ended_at) };
+    }
+
+    function records() {
+      var all = completed.slice();
+      if (liveOpen && liveOpen.start != null) all.push(liveOpen);
+      return all;
+    }
+
+    function clampView() {
+      var now = Date.now();
+      var maxEnd = now;
+      var minEnd = (now - MAX_SPAN) + windowMs;
+      if (minEnd > maxEnd) minEnd = maxEnd;
+      if (viewEnd > maxEnd) viewEnd = maxEnd;
+      if (viewEnd < minEnd) viewEnd = minEnd;
+      follow = (maxEnd - viewEnd) < 1500;
+      if (nowBtn) nowBtn.disabled = follow;
+    }
+
+    function timeToX(t) { var vs = viewEnd - windowMs; return PAD_L + (t - vs) / windowMs * plotW; }
+    function xToTime(x) { var vs = viewEnd - windowMs; return vs + (x - PAD_L) / plotW * windowMs; }
+
+    function resize() {
+      if (!canvas) return;
+      dpr = window.devicePixelRatio || 1;
+      cssW = canvas.clientWidth; cssH = canvas.clientHeight;
+      plotW = Math.max(1, cssW - PAD_L - PAD_R);
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      draw();
+    }
+
+    function css(name) {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    function niceStep() {
+      if (windowMs <= WINDOWS["1h"]) return 10 * 60e3;      // 10 min
+      if (windowMs <= WINDOWS["1d"]) return 3 * 3600e3;     // 3 h
+      return 86400e3;                                       // 1 day
+    }
+
+    function fmtTick(t, step) {
+      var d = new Date(t);
+      if (step >= 86400e3) return (d.getMonth() + 1) + "/" + d.getDate();
+      return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    }
+
+    function draw() {
+      if (!ctx) return;
+      clampView();
+      var now = Date.now();
+      ctx.clearRect(0, 0, cssW, cssH);
+      drawn = [];
+
+      var border = css("--border"), muted = css("--muted"), text = css("--text");
+      var panel2 = css("--panel-2"), accent = css("--accent");
+
+      // track background
+      ctx.fillStyle = panel2;
+      roundRect(PAD_L, TRACK_TOP, plotW, TRACK_H, 6); ctx.fill();
+
+      // axis grid + labels
+      var step = niceStep(), vs = viewEnd - windowMs;
+      ctx.font = "11px system-ui, sans-serif";
+      ctx.textBaseline = "top";
+      for (var t = Math.ceil(vs / step) * step; t <= viewEnd; t += step) {
+        var x = timeToX(t);
+        ctx.strokeStyle = border; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x + 0.5, TRACK_TOP); ctx.lineTo(x + 0.5, AXIS_Y); ctx.stroke();
+        ctx.fillStyle = muted; ctx.textAlign = "center";
+        ctx.fillText(fmtTick(t, step), x, AXIS_Y + 6);
+      }
+
+      // hold bars
+      var list = records();
+      for (var i = 0; i < list.length; i++) {
+        var r = list[i];
+        if (r.start == null) continue;
+        var end = r.end == null ? now : r.end;
+        var sx = timeToX(r.start), ex = timeToX(end);
+        if (ex < PAD_L || sx > PAD_L + plotW) continue;
+        sx = Math.max(sx, PAD_L); ex = Math.min(ex, PAD_L + plotW);
+        var w = Math.max(1.5, ex - sx);
+        var col = colorFor(r.name);
+        ctx.save();
+        roundRect(sx, TRACK_TOP + 4, w, TRACK_H - 8, 3); ctx.clip();
+        ctx.fillStyle = col; ctx.fillRect(sx, TRACK_TOP + 4, w, TRACK_H - 8);
+        if (r.kind === "lease") hatch(sx, TRACK_TOP + 4, w, TRACK_H - 8);
+        if (r.end == null) { // open hold: soft leading edge glow
+          ctx.fillStyle = "rgba(255,255,255,.35)";
+          ctx.fillRect(ex - 2, TRACK_TOP + 4, 2, TRACK_H - 8);
+        }
+        if (w > 34) {
+          ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+          ctx.font = "600 11px system-ui, sans-serif";
+          ctx.fillText(r.name, sx + 5, TRACK_TOP + TRACK_H / 2);
+        }
+        ctx.restore();
+        drawn.push({ x0: sx, x1: ex, rec: r, end: end });
+      }
+
+      // "now" marker
+      if (now >= vs && now <= viewEnd) {
+        var nx = timeToX(now);
+        ctx.strokeStyle = accent; ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(nx, TRACK_TOP - 2); ctx.lineTo(nx, AXIS_Y + 2); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      renderLegend(list);
+    }
+
+    function roundRect(x, y, w, h, r) {
+      r = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function hatch(x, y, w, h) {
+      ctx.strokeStyle = "rgba(0,0,0,.22)"; ctx.lineWidth = 1;
+      for (var i = -h; i < w; i += 7) {
+        ctx.beginPath(); ctx.moveTo(x + i, y + h); ctx.lineTo(x + i + h, y); ctx.stroke();
+      }
+    }
+
+    function renderLegend(list) {
+      var seen = {};
+      list.forEach(function (r) {
+        if (!seen[r.name]) seen[r.name] = { color: colorFor(r.name), prio: r.priority };
+      });
+      var names = Object.keys(seen).sort();
+      if (!names.length) { legendEl.innerHTML = '<span class="lg">no activity in this window</span>'; return; }
+      legendEl.innerHTML = names.map(function (n) {
+        return '<span class="lg"><span class="sw" style="background:' + seen[n].color + '"></span>' +
+          '<b>' + esc(n) + '</b> · prio ' + esc(seen[n].prio) + '</span>';
+      }).join("");
+    }
+
+    function hit(px, py) {
+      for (var i = drawn.length - 1; i >= 0; i--) {
+        var d = drawn[i];
+        if (px >= d.x0 - 1 && px <= d.x1 + 1 && py >= TRACK_TOP && py <= AXIS_Y) return d;
+      }
+      return null;
+    }
+
+    function showTip(d, px) {
+      var r = d.rec, end = d.end;
+      var dur = fmtDuration((end - r.start) / 1000);
+      var when = new Date(r.start).toLocaleString() +
+        (r.end == null ? " → now" : " → " + new Date(end).toLocaleTimeString());
+      tip.innerHTML =
+        '<div class="tl-tip-name"><span class="sw" style="background:' + colorFor(r.name) + '"></span>' +
+          esc(r.name) + ' ' + kindTag(r.kind) + (r.end == null ? '<span class="revoke-tag" style="border-color:var(--green);color:var(--green)">active</span>' : '') + '</div>' +
+        '<dl>' +
+          '<dt>when</dt><dd>' + esc(when) + '</dd>' +
+          '<dt>held</dt><dd>' + esc(dur) + '</dd>' +
+          '<dt>priority</dt><dd>' + esc(r.priority) + '</dd>' +
+          (r.model ? '<dt>model</dt><dd>' + esc(r.model) + '</dd>' : '') +
+        '</dl>';
+      tip.hidden = false;
+      tip.style.transform = "translate(-50%, 0)";
+      var canvasRect = canvas.getBoundingClientRect();
+      var tipRect = tip.getBoundingClientRect();
+      var halfWidth = tipRect.width / 2;
+      var left = canvasRect.left + px;
+      left = Math.min(Math.max(left, halfWidth + 8), window.innerWidth - halfWidth - 8);
+      var top = canvasRect.top + AXIS_Y + 6;
+      if (top + tipRect.height + 8 > window.innerHeight) {
+        top = canvasRect.top + TRACK_TOP - 6;
+        tip.style.transform = "translate(-50%, -100%)";
+      }
+      tip.style.left = left + "px";
+      tip.style.top = top + "px";
+    }
+
+    function hideTip() { if (tip) tip.hidden = true; }
+
+    function onMove(e) {
+      var rect = canvas.getBoundingClientRect();
+      var px = e.clientX - rect.left, py = e.clientY - rect.top;
+      if (dragging) {
+        var dx = e.clientX - dragStartX;
+        if (Math.abs(dx) > 2) moved = true;
+        viewEnd = dragStartEnd - dx * (windowMs / plotW);
+        draw();
+        return;
+      }
+      var d = hit(px, py);
+      if (d) { showTip(d, px); canvas.style.cursor = "pointer"; }
+      else { hideTip(); canvas.style.cursor = ""; }
+    }
+
+    function onDown(e) {
+      dragging = true; moved = false;
+      dragStartX = e.clientX; dragStartEnd = viewEnd;
+      canvas.classList.add("drag"); hideTip();
+      canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);
+    }
+    function onUp() { dragging = false; canvas.classList.remove("drag"); }
+
+    function setWindow(win) {
+      windowMs = WINDOWS[win] || windowMs;
+      [].forEach.call(winWrap.querySelectorAll("button"), function (b) {
+        b.classList.toggle("active", b.getAttribute("data-win") === win);
+      });
+      draw();
+    }
+
+    function snapNow() { viewEnd = Date.now(); follow = true; draw(); }
+
+    function fetchHistory() {
+      fetch("/api/history?window=7d", { cache: "no-store" })
+        .then(function (r) { return r.json(); })
+        .then(function (recs) {
+          completed = (recs || []).filter(function (r) { return r.ended_at; }).map(normalize);
+          draw();
+        })
+        .catch(function () {});
+    }
+
+    // Feed the live holder from the queue snapshot so the open bar grows in real time.
+    function setLive(snap) {
+      var h = snap && snap.holder;
+      if (h && h.granted_at) {
+        liveOpen = { id: h.id, name: h.name, priority: h.priority, kind: h.kind,
+                     model: h.model || "", start: toMs(h.granted_at), end: null };
+      } else {
+        liveOpen = null;
+      }
+    }
+
+    function init() {
+      canvas = $("tl-canvas"); tip = $("tl-tip"); legendEl = $("tl-legend");
+      nowBtn = $("tl-now"); winWrap = $("tl-windows");
+      if (!canvas || !canvas.getContext) return;
+      ctx = canvas.getContext("2d");
+      // Escape the panel's overflow clipping and stacking context.
+      document.body.appendChild(tip);
+
+      winWrap.addEventListener("click", function (e) {
+        var b = e.target.closest("button[data-win]"); if (b) setWindow(b.getAttribute("data-win"));
+      });
+      nowBtn.addEventListener("click", snapNow);
+      canvas.addEventListener("pointerdown", onDown);
+      canvas.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      canvas.addEventListener("pointerleave", function () { if (!dragging) hideTip(); });
+      window.addEventListener("resize", resize);
+      if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas);
+
+      resize();
+      fetchHistory();
+      setInterval(fetchHistory, 4000);
+      // Redraw ~2x/sec so the live edge and "now" marker advance smoothly.
+      setInterval(function () { if (follow) viewEnd = Date.now(); draw(); }, 500);
+    }
+
+    return { init: init, setLive: setLive };
+  })();
+
   // ---- boot ----
+  Timeline.init();
   startStream();
   loadKeys();
   setInterval(tickCounters, 1000);

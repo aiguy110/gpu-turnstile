@@ -565,3 +565,61 @@ func TestShutdownReleasesHolder(t *testing.T) {
 		t.Fatal("heartbeat after shutdown should return false")
 	}
 }
+
+func TestHistoryRecordsCompletedAndOpenHolds(t *testing.T) {
+	s, clk, _ := newTestScheduler(t, testConfig())
+	epoch := clk.Now()
+
+	// First hold: an LLM request that runs for 5s then completes.
+	a := s.Acquire(llm("a", 40, "m1"))
+	if !isGranted(a) {
+		t.Fatal("a should be granted")
+	}
+	clk.Advance(5 * time.Second)
+	a.Release()
+
+	// Second hold: a lease, still open. Priority >= the warm tier so it evicts
+	// the warm model immediately rather than waiting out the grace window.
+	clk.Advance(1 * time.Second)
+	b := s.Acquire(lease("b", 40))
+	if !isGranted(b) {
+		t.Fatal("b should be granted")
+	}
+	clk.Advance(2 * time.Second)
+
+	hist := s.History(epoch.Add(-time.Hour))
+	if len(hist) != 2 {
+		t.Fatalf("want 2 records, got %d: %+v", len(hist), hist)
+	}
+	// Oldest first: completed LLM, then open lease.
+	if hist[0].ID != "a" || hist[0].Kind != types.KindLLM || hist[0].Model != "m1" {
+		t.Fatalf("record[0] wrong: %+v", hist[0])
+	}
+	if hist[0].EndedAt.IsZero() || hist[0].EndedAt.Sub(hist[0].StartedAt) != 5*time.Second {
+		t.Fatalf("record[0] should be a closed 5s hold: %+v", hist[0])
+	}
+	if hist[1].ID != "b" || !hist[1].EndedAt.IsZero() {
+		t.Fatalf("record[1] should be the open holder: %+v", hist[1])
+	}
+}
+
+func TestHistorySinceFiltersOldRecords(t *testing.T) {
+	s, clk, _ := newTestScheduler(t, testConfig())
+
+	a := s.Acquire(llm("a", 40, "m1"))
+	isGranted(a)
+	clk.Advance(time.Second)
+	a.Release()
+	cutoff := clk.Now()
+	clk.Advance(time.Second)
+	b := s.Acquire(llm("b", 40, "m1"))
+	isGranted(b)
+	clk.Advance(time.Second)
+	b.Release()
+
+	// since == a's end: a is excluded (EndedAt not strictly after since), b kept.
+	hist := s.History(cutoff)
+	if len(hist) != 1 || hist[0].ID != "b" {
+		t.Fatalf("want only b, got %+v", hist)
+	}
+}
