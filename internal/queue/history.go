@@ -11,20 +11,12 @@ import (
 	"github.com/aiguy110/gpu-turnstile/internal/types"
 )
 
-// historyLog is append-only JSONL persistence for completed GPU holds, backing
-// the console timeline across restarts. On open it compacts the file down to
-// the records still inside the retention window and returns them so the
-// scheduler can seed its in-memory history. Appends are serialized by a mutex;
-// they are issued from the scheduler's owner goroutine and are small, so the
-// synchronous write does not meaningfully stall scheduling.
+// historyLog is append-only JSONL persistence for completed GPU holds.
 type historyLog struct {
 	mu sync.Mutex
 	f  *os.File
 }
 
-// openHistoryLog loads existing records within [now-retain, now], rewrites the
-// file to just those (compaction), and returns a log open for appends plus the
-// kept records in chronological order.
 func openHistoryLog(path string, retain time.Duration, now time.Time) (*historyLog, []types.HoldRecord, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -42,36 +34,25 @@ func openHistoryLog(path string, retain time.Duration, now time.Time) (*historyL
 	return &historyLog{f: f}, kept, nil
 }
 
-// loadRecords reads whole, completed records whose EndedAt is after cutoff.
-// Corrupt or partial lines (e.g. from a crash mid-write) are skipped.
 func loadRecords(path string, cutoff time.Time) []types.HoldRecord {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil // missing file == empty history
+		return nil
 	}
 	defer f.Close()
 	var out []types.HoldRecord
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		var record types.HoldRecord
+		if json.Unmarshal(scanner.Bytes(), &record) == nil && !record.EndedAt.IsZero() && record.EndedAt.After(cutoff) {
+			out = append(out, record)
 		}
-		var r types.HoldRecord
-		if err := json.Unmarshal(line, &r); err != nil {
-			continue
-		}
-		if r.EndedAt.IsZero() || !r.EndedAt.After(cutoff) {
-			continue
-		}
-		out = append(out, r)
 	}
 	return out
 }
 
-// writeRecords atomically replaces path with recs (temp file + rename).
-func writeRecords(path string, recs []types.HoldRecord) error {
+func writeRecords(path string, records []types.HoldRecord) error {
 	tmp := path + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
@@ -79,39 +60,34 @@ func writeRecords(path string, recs []types.HoldRecord) error {
 	}
 	w := bufio.NewWriter(f)
 	enc := json.NewEncoder(w)
-	for i := range recs {
-		if err := enc.Encode(recs[i]); err != nil {
+	for i := range records {
+		if err := enc.Encode(records[i]); err != nil {
 			f.Close()
-			os.Remove(tmp)
+			_ = os.Remove(tmp)
 			return err
 		}
 	}
 	if err := w.Flush(); err != nil {
 		f.Close()
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)
 }
 
-// append writes one record as a JSON line. Errors are swallowed: persistence is
-// best-effort and must never wedge the scheduler.
-func (h *historyLog) append(r types.HoldRecord) {
+func (h *historyLog) append(record types.HoldRecord) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.f == nil {
 		return
 	}
-	b, err := json.Marshal(r)
-	if err != nil {
-		return
+	if raw, err := json.Marshal(record); err == nil {
+		_, _ = h.f.Write(append(raw, '\n'))
 	}
-	b = append(b, '\n')
-	_, _ = h.f.Write(b)
 }
 
 func (h *historyLog) Close() error {

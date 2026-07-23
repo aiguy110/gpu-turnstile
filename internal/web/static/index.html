@@ -52,6 +52,9 @@
   }
   header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .3px; }
   header .sub { color: var(--muted); font-size: 12px; }
+  .nav { display: flex; gap: 4px; margin-left: 24px; padding: 3px; border-radius: 9px; background: var(--panel-2); }
+  .nav button { border: 0; padding: 5px 10px; color: var(--muted); background: transparent; font-size: 12px; }
+  .nav button.active { color: var(--text); background: var(--panel); box-shadow: 0 1px 3px rgba(20,30,50,.12); }
   .conn { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
   .dot.live { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 25%, transparent); }
@@ -131,13 +134,11 @@
   .err { color: var(--red); font-size: 12px; margin-top: 8px; min-height: 1em; }
   .updated { color: var(--muted); font-size: 11px; }
 
-  /* ---- timeline ---- */
+  /* GPU timeline */
   #timeline-panel > h2 { display: flex; align-items: center; gap: 12px; }
-  .tl-controls { margin-left: auto; display: flex; align-items: center; gap: 8px;
-    text-transform: none; letter-spacing: 0; }
+  .tl-controls { margin-left: auto; display: flex; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; }
   .tl-windows { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-  .tl-windows button { border: 0; border-radius: 0; background: var(--panel); color: var(--muted);
-    padding: 4px 11px; font-size: 12px; font-weight: 600; border-right: 1px solid var(--border); }
+  .tl-windows button { border: 0; border-radius: 0; background: var(--panel); color: var(--muted); padding: 4px 11px; font-size: 12px; font-weight: 600; border-right: 1px solid var(--border); }
   .tl-windows button:last-child { border-right: 0; }
   .tl-windows button.active { background: var(--accent); color: #fff; }
   .tl-now { padding: 4px 11px; font-size: 12px; }
@@ -145,19 +146,90 @@
   #tl-wrap { position: relative; padding: 12px 16px 4px; }
   #tl-canvas { display: block; width: 100%; height: 104px; cursor: grab; touch-action: none; }
   #tl-canvas.drag { cursor: grabbing; }
-  .tl-tip { position: fixed; pointer-events: none; z-index: 2147483647; max-width: 260px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-    box-shadow: var(--shadow); padding: 8px 10px; font-size: 12px; transform: translate(-50%, 0); }
+  .tl-tip { position: fixed; pointer-events: none; z-index: 2147483647; max-width: 260px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); padding: 8px 10px; font-size: 12px; transform: translate(-50%, 0); }
   .tl-tip .tl-tip-name { font-weight: 650; display: flex; align-items: center; gap: 7px; }
-  .tl-tip .sw { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+  .tl-tip .sw, .tl-legend .sw { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
   .tl-tip dl { margin: 6px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
   .tl-tip dt { color: var(--muted); }
   .tl-tip dd { margin: 0; font-variant-numeric: tabular-nums; }
   .tl-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 16px 14px; }
   .tl-legend .lg { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
-  .tl-legend .sw { width: 11px; height: 11px; border-radius: 3px; }
   .tl-legend .lg b { color: var(--text); font-weight: 600; }
   .tl-hint { color: var(--muted); font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+  /* LLM activity */
+  .activity-view { display: none; max-width: none; }
+  .activity-view.active { display: block; }
+  .overview-view.hidden { display: none; }
+  .activity-shell { height: calc(100vh - 74px); min-height: 620px; display: grid;
+    grid-template-columns: 300px minmax(440px, 1fr) 280px; border: 1px solid var(--border);
+    border-radius: 12px; background: var(--panel); box-shadow: var(--shadow); overflow: hidden; }
+  .activity-list, .activity-detail, .activity-meta { min-width: 0; overflow: auto; }
+  .activity-list { border-right: 1px solid var(--border); }
+  .activity-meta { border-left: 1px solid var(--border); background: color-mix(in srgb, var(--panel-2) 45%, var(--panel)); }
+  .pane-head { height: 55px; padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .pane-head h2 { font-size: 13px; margin: 0; }
+  .pane-head .count { color: var(--muted); font-size: 11px; }
+  .filters { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; }
+  .filter { padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-size: 11px; background: transparent; }
+  .filter.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--accent-soft); }
+  .run-day { padding: 11px 14px 5px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .7px; }
+  .run { padding: 11px 12px; border-bottom: 1px solid var(--border); cursor: pointer; position: relative; }
+  .run:hover { background: var(--panel-2); }
+  .run.selected { background: var(--accent-soft); }
+  .run.selected:before { content:""; position:absolute; inset:0 auto 0 0; width:3px; background:var(--accent); }
+  .run-top { display: flex; align-items: center; gap: 7px; }
+  .run-name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-time { margin-left: auto; color: var(--muted); font: 10px var(--mono); }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  .status-dot.running { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb,var(--green) 18%,transparent); }
+  .status-dot.queued { background: var(--amber); }
+  .status-dot.complete { background: var(--muted); }
+  .status-dot.error, .status-dot.canceled { background: var(--red); }
+  .run-prompt { color: var(--muted); font-size: 12px; margin: 5px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-stats { display: flex; gap: 9px; color: var(--muted); font: 10px var(--mono); }
+  .stream-head { min-height: 55px; height: auto; justify-content: space-between; position: sticky; top: 0; background: var(--panel); z-index: 2; }
+  .stream-title { min-width: 0; }
+  .stream-title h2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stream-sub { color: var(--muted); font: 10px var(--mono); margin-top: 3px; }
+  .stream-actions { display: flex; gap: 6px; }
+  .stream-actions button { padding: 5px 8px; font-size: 11px; }
+  .messages { padding: 18px 22px 80px; max-width: 820px; margin: 0 auto; }
+  .message { display: grid; grid-template-columns: 28px 1fr; gap: 10px; margin-bottom: 20px; }
+  .avatar { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 10px; font-weight: 750; }
+  .avatar.user { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+  .avatar.model { color: var(--llm); background: color-mix(in srgb,var(--llm) 13%,transparent); border: 1px solid color-mix(in srgb,var(--llm) 28%,var(--border)); }
+  .message-label { font-size: 11px; font-weight: 650; margin-bottom: 5px; }
+  .message-text { font-size: 13px; line-height: 1.62; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .message-text p { margin: 0 0 10px; }
+  .message-text code { font: 12px var(--mono); background: var(--panel-2); padding: 2px 4px; border-radius: 4px; }
+  .tool-call { margin: 10px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font: 11px var(--mono); }
+  .tool-call summary { display:flex; gap:8px; align-items:center; padding:8px 9px; background:var(--panel-2); cursor:pointer; list-style:none; }
+  .tool-call summary:before { content:"›"; color:var(--muted); transition:transform .12s; }
+  .tool-call[open] summary:before { transform:rotate(90deg); }
+  .tool-body { padding: 9px; border-top:1px solid var(--border); }
+  .tool-body b { display:block; margin:0 0 5px; color:var(--muted); font:10px system-ui,sans-serif; text-transform:uppercase; letter-spacing:.5px; }
+  .tool-body pre { margin:0 0 10px; padding:8px; max-height:220px; overflow:auto; border-radius:6px; background:var(--panel-2); color:var(--text); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .cursor { display:inline-block; width:7px; height:14px; margin-left:2px; vertical-align:-2px; background:var(--llm); animation:blink 1s steps(2,start) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  .live-banner { position: sticky; bottom: 12px; width: max-content; margin: 0 auto; z-index: 2; display:flex; align-items:center; gap:7px;
+    padding:6px 10px; border:1px solid color-mix(in srgb,var(--green) 35%,var(--border)); border-radius:999px;
+    background:color-mix(in srgb,var(--green) 9%,var(--panel)); color:var(--green); font-size:11px; box-shadow:var(--shadow); }
+  .meta-section { padding: 14px; border-bottom: 1px solid var(--border); }
+  .meta-section h3 { margin:0 0 10px; font-size:10px; text-transform:uppercase; letter-spacing:.7px; color:var(--muted); }
+  .kv { display:grid; grid-template-columns: 1fr auto; gap:7px 10px; font-size:11px; }
+  .kv dt { color:var(--muted); }
+  .kv dd { margin:0; text-align:right; font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; max-width:150px; }
+  .token-bar { height:5px; border-radius:3px; background:var(--border); overflow:hidden; margin:8px 0 5px; }
+  .token-bar > span { display:block; height:100%; width:42%; background:var(--llm); }
+  .timeline { position:relative; padding-left:15px; }
+  .timeline:before { content:""; position:absolute; left:3px; top:4px; bottom:5px; width:1px; background:var(--border); }
+  .event { position:relative; margin:0 0 11px; font-size:11px; }
+  .event:before { content:""; position:absolute; left:-15px; top:4px; width:7px; height:7px; border-radius:50%; background:var(--border); }
+  .event.live:before { background:var(--green); }
+  .event time { display:block; color:var(--muted); font:10px var(--mono); }
+  @media (max-width: 1000px) { .activity-shell { grid-template-columns:260px 1fr; } .activity-meta { display:none; } }
+  @media (max-width: 680px) { .nav { margin-left:4px; } .activity-shell { grid-template-columns:1fr; height:auto; } .activity-list { display:none; } }
 </style>
 </head>
 <body>
@@ -166,6 +238,10 @@
     <h1>turnstile</h1>
     <div class="sub">GPU access console</div>
   </div>
+  <nav class="nav" aria-label="Console views">
+    <button id="nav-overview" class="active" type="button">Overview</button>
+    <button id="nav-activity" type="button">LLM activity</button>
+  </nav>
   <div class="conn">
     <span id="updated" class="updated"></span>
     <span id="dot" class="dot"></span>
@@ -173,27 +249,16 @@
   </div>
 </header>
 
-<main>
+<main id="overview-view" class="overview-view">
   <section class="panel" id="timeline-panel">
     <h2>
-      GPU timeline
-      <span class="tl-hint">drag to pan</span>
+      GPU timeline <span class="tl-hint">drag to pan</span>
       <span class="tl-controls">
-        <span class="tl-windows" id="tl-windows">
-          <button data-win="1h">1h</button>
-          <button data-win="1d" class="active">1d</button>
-          <button data-win="7d">7d</button>
-        </span>
+        <span class="tl-windows" id="tl-windows"><button data-win="1h">1h</button><button data-win="1d" class="active">1d</button><button data-win="7d">7d</button></span>
         <button class="tl-now" id="tl-now" disabled>now ▸</button>
       </span>
     </h2>
-    <div class="body" style="padding:0">
-      <div id="tl-wrap">
-        <canvas id="tl-canvas"></canvas>
-        <div class="tl-tip" id="tl-tip" hidden></div>
-      </div>
-      <div class="tl-legend" id="tl-legend"></div>
-    </div>
+    <div class="body" style="padding:0"><div id="tl-wrap"><canvas id="tl-canvas"></canvas><div class="tl-tip" id="tl-tip" hidden></div></div><div class="tl-legend" id="tl-legend"></div></div>
   </section>
 
   <div class="grid">
@@ -259,6 +324,30 @@
       <div id="secret-box"></div>
     </div>
   </section>
+</main>
+
+<main id="activity-view" class="activity-view">
+  <div class="activity-shell">
+    <aside class="activity-list">
+      <div class="pane-head"><h2>Generations</h2><span class="count" id="activity-count">0</span></div>
+      <div class="filters"><button class="filter active" data-filter="all">All</button><button class="filter" data-filter="running">Running</button><button class="filter" data-filter="error">Errors</button></div>
+      <div id="activity-list-body"><div class="empty">No LLM requests yet</div></div>
+    </aside>
+
+    <section class="activity-detail">
+      <div class="pane-head stream-head">
+        <div class="stream-title"><h2 id="activity-title">Select a generation</h2><div class="stream-sub" id="activity-subtitle">Live and recent LLM output</div></div>
+        <div class="stream-actions"><button type="button" id="copy-output" disabled>Copy output</button></div>
+      </div>
+      <div class="messages" id="activity-messages"><div class="empty">Choose a request from the left.</div></div>
+      <div class="live-banner" id="activity-live" style="display:none"><span class="status-dot running"></span>Following live output</div>
+    </section>
+
+    <aside class="activity-meta">
+      <div class="pane-head"><h2>Request details</h2></div>
+      <div id="activity-meta-body"><section class="meta-section"><div class="empty">No request selected</div></section></div>
+    </aside>
+  </div>
 </main>
 
 <script>
@@ -812,10 +901,165 @@
     return { init: init, setLive: setLive };
   })();
 
+
+  // ---- console navigation + LLM activity ----
+  var activities = [];
+  var selectedActivityID = "";
+  var activityFilter = "all";
+
+  function showView(view, updateURL) {
+    var activity = view === "activity";
+    $("overview-view").classList.toggle("hidden", activity);
+    $("activity-view").classList.toggle("active", activity);
+    $("nav-overview").classList.toggle("active", !activity);
+    $("nav-activity").classList.toggle("active", activity);
+    if (updateURL && window.history && window.history.replaceState) {
+      var url = new URL(window.location.href);
+      if (activity) url.searchParams.set("view", "activity");
+      else url.searchParams.delete("view");
+      window.history.replaceState(null, "", url);
+    }
+  }
+
+  $("nav-overview").addEventListener("click", function () { showView("overview", true); });
+  $("nav-activity").addEventListener("click", function () { showView("activity", true); });
+  document.querySelectorAll(".filter").forEach(function (filter) {
+    filter.addEventListener("click", function () {
+      document.querySelectorAll(".filter").forEach(function (f) { f.classList.remove("active"); });
+      filter.classList.add("active");
+      activityFilter = filter.getAttribute("data-filter");
+      renderActivityList();
+    });
+  });
+
+  $("activity-list-body").addEventListener("click", function (ev) {
+    var run = ev.target.closest("[data-activity-id]");
+    if (!run) return;
+    selectedActivityID = run.getAttribute("data-activity-id");
+    renderActivity();
+    loadActivityDetail(selectedActivityID);
+  });
+
+  $("copy-output").addEventListener("click", function () {
+    var a = selectedActivity();
+    if (a && navigator.clipboard) navigator.clipboard.writeText(a.output || "");
+  });
+
+  function isLiveActivity(a) { return a.status === "queued" || a.status === "running"; }
+  function selectedActivity() { return activities.find(function (a) { return a.id === selectedActivityID; }); }
+  function activityTitle(a) {
+    var title = (a.prompt || "").trim().split("\n")[0];
+    return title || a.endpoint || "LLM request";
+  }
+  function shortTime(iso) {
+    var d = new Date(iso);
+    return isNaN(d) ? "—" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  function ms(value) { return value ? (value / 1000).toFixed(value < 10000 ? 1 : 0) + "s" : "—"; }
+  function elapsed(a) {
+    var start = new Date(a.enqueued_at).getTime();
+    var end = a.completed_at ? new Date(a.completed_at).getTime() : Date.now();
+    return fmtDuration((end - start) / 1000);
+  }
+  function statusClass(status) { return status === "completed" ? "complete" : status; }
+
+  function renderActivityList() {
+    var visible = activities.filter(function (a) {
+      if (activityFilter === "running") return isLiveActivity(a);
+      if (activityFilter === "error") return a.status === "error" || a.status === "canceled";
+      return true;
+    });
+    $("activity-count").textContent = activities.length + (activities.length === 1 ? " request" : " requests");
+    if (!visible.length) {
+      $("activity-list-body").innerHTML = '<div class="empty">No matching requests</div>';
+      return;
+    }
+    $("activity-list-body").innerHTML = visible.map(function (a) {
+      var stats = [];
+      if (a.model) stats.push(esc(a.model));
+      stats.push(a.output_tokens ? esc(a.output_tokens.toLocaleString()) + " tok" : esc(a.output_bytes || 0) + " B");
+      stats.push(esc(elapsed(a)));
+      return '<article class="run ' + (a.id === selectedActivityID ? "selected" : "") + '" data-activity-id="' + esc(a.id) + '">' +
+        '<div class="run-top"><span class="status-dot ' + statusClass(a.status) + '"></span><span class="run-name">' + esc(a.name) + ' · ' + esc(a.model || "model") + '</span><time class="run-time">' + shortTime(a.enqueued_at) + '</time></div>' +
+        '<div class="run-prompt">' + esc(activityTitle(a)) + '</div><div class="run-stats"><span>' + stats.join('</span><span>') + '</span></div></article>';
+    }).join("");
+  }
+
+  function renderToolCalls(calls) {
+    return (calls || []).map(function (call, i) {
+      return '<details class="tool-call"><summary><b>Tool call</b><span>' + esc(call.name || call.id || ("#" + (i + 1))) + '</span></summary>' +
+        '<div class="tool-body"><b>Arguments</b><pre>' + esc(call.arguments || "—") + '</pre><b>Result</b><pre>' + esc(call.result || "Not present in this request") + '</pre></div></details>';
+    }).join("");
+  }
+
+  function renderActivity() {
+    renderActivityList();
+    var a = selectedActivity();
+    if (!a) {
+      $("activity-title").textContent = "Select a generation";
+      $("activity-subtitle").textContent = "Live and recent LLM output";
+      $("activity-messages").innerHTML = '<div class="empty">Choose a request from the left.</div>';
+      $("activity-meta-body").innerHTML = '<section class="meta-section"><div class="empty">No request selected</div></section>';
+      $("copy-output").disabled = true;
+      $("activity-live").style.display = "none";
+      return;
+    }
+    $("activity-title").textContent = activityTitle(a);
+    $("activity-subtitle").textContent = a.id + " · " + a.name + " · " + elapsed(a);
+    $("copy-output").disabled = !a.output;
+    var messages = "";
+    if (a.prompt) messages += '<article class="message"><div class="avatar user">U</div><div><div class="message-label">Request</div><div class="message-text">' + esc(a.prompt) + '</div></div></article>';
+    messages += '<article class="message"><div class="avatar model">AI</div><div><div class="message-label">' + esc(a.model || "Model") + ' <span class="state">· ' + esc(a.status) + '</span></div>' +
+      '<div class="message-text">' + esc(a.output || (isLiveActivity(a) ? "Waiting for output…" : "No text output")) + (a.truncated ? "\n\n[output truncated]" : "") + (a.status === "running" ? '<span class="cursor"></span>' : "") + '</div>' +
+      renderToolCalls(a.tool_calls) + (a.error ? '<div class="err">' + esc(a.error) + '</div>' : "") + '</div></article>';
+    $("activity-messages").innerHTML = messages;
+    $("activity-live").style.display = isLiveActivity(a) ? "flex" : "none";
+
+    var lifecycle = '<div class="event"><b>Queued</b><time>' + esc(fmtDate(a.enqueued_at)) + '</time></div>';
+    if (a.granted_at) lifecycle += '<div class="event"><b>GPU granted</b><time>' + esc(fmtDate(a.granted_at)) + ' · waited ' + esc(ms(a.queue_wait_ms)) + '</time></div>';
+    if (a.first_token_at) lifecycle += '<div class="event"><b>First output</b><time>' + esc(fmtDate(a.first_token_at)) + ' · ' + esc(ms(a.first_token_ms)) + '</time></div>';
+    lifecycle += '<div class="event ' + (isLiveActivity(a) ? "live" : "") + '"><b>' + esc(a.status) + '</b><time>' + esc(a.completed_at ? fmtDate(a.completed_at) : elapsed(a) + " so far") + '</time></div>';
+    $("activity-meta-body").innerHTML = '<section class="meta-section"><h3>Generation</h3><dl class="kv">' +
+      '<dt>Status</dt><dd>' + esc(a.status) + '</dd><dt>Model</dt><dd>' + esc(a.model || "—") + '</dd><dt>Client</dt><dd>' + esc(a.name) + '</dd><dt>Priority</dt><dd>' + esc(a.priority) + '</dd><dt>Endpoint</dt><dd>' + esc(a.endpoint) + '</dd></dl></section>' +
+      '<section class="meta-section"><h3>Performance</h3><dl class="kv"><dt>Queue wait</dt><dd>' + esc(ms(a.queue_wait_ms)) + '</dd><dt>First output</dt><dd>' + esc(ms(a.first_token_ms)) + '</dd><dt>Output speed</dt><dd>' + (a.tokens_per_sec ? esc(a.tokens_per_sec.toFixed(1)) + " t/s" : "—") + '</dd><dt>Output</dt><dd>' + (a.output_tokens ? esc(a.output_tokens.toLocaleString()) + " tokens" : esc(a.output_bytes || 0) + " bytes") + '</dd></dl></section>' +
+      '<section class="meta-section"><h3>Lifecycle</h3><div class="timeline">' + lifecycle + '</div></section>' +
+      '<section class="meta-section"><h3>Privacy</h3><div style="font-size:11px;color:var(--muted)">Authorization headers and API keys are never captured. History is retained according to the local activity configuration.</div></section>';
+  }
+
+  function applyActivity(a) {
+    var i = activities.findIndex(function (item) { return item.id === a.id; });
+    if (i >= 0) activities[i] = a; else activities.unshift(a);
+    activities.sort(function (x, y) { return new Date(y.enqueued_at) - new Date(x.enqueued_at); });
+    if (!selectedActivityID || !selectedActivity()) selectedActivityID = activities[0] ? activities[0].id : "";
+    renderActivity();
+  }
+
+  function loadActivityDetail(id) {
+    if (!id) return;
+    fetch("/api/activity/" + encodeURIComponent(id), { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (a) {
+      if (a && a.id) applyActivity(a);
+    }).catch(function () {});
+  }
+
+  function loadActivity() {
+    fetch("/api/activity", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (list) {
+      activities = list || [];
+      if (!selectedActivityID && activities.length) selectedActivityID = activities[0].id;
+      renderActivity();
+      loadActivityDetail(selectedActivityID);
+    }).catch(function () { renderActivity(); });
+    if (window.EventSource) {
+      var activityES = new EventSource("/api/activity/stream");
+      activityES.onmessage = function (ev) { try { applyActivity(JSON.parse(ev.data)); } catch (e) {} };
+    }
+  }
+
   // ---- boot ----
+  showView(new URLSearchParams(window.location.search).get("view") === "activity" ? "activity" : "overview", false);
   Timeline.init();
   startStream();
   loadKeys();
+  loadActivity();
   setInterval(tickCounters, 1000);
 })();
 </script>

@@ -115,14 +115,12 @@ type scheduler struct {
 	warmModel       types.Model
 	warmTier        types.Priority
 	lastLLMComplete time.Time
-	deferredID      string             // id of the waiter we last logged a grace-deferral for
-	history         []types.HoldRecord // completed holds, chronological, pruned to historyRetention
+	deferredID      string // id of the waiter we last logged a grace-deferral for
+	history         []types.HoldRecord
 	sink            func(types.HoldRecord)
 	hlog            *historyLog
 }
 
-// historyRetention bounds how far back the timeline can look. Holds that ended
-// longer ago than this are pruned from memory.
 const historyRetention = 7 * 24 * time.Hour
 
 // New constructs the scheduler and starts its owner goroutine. Signature is
@@ -137,7 +135,6 @@ func New(cfg types.SchedulerConfig, ev types.Evictor, log *slog.Logger) types.Sc
 			s.history = seed
 			s.hlog = hlog
 			s.sink = hlog.append
-			s.log.Info("history log loaded", "path", cfg.HistoryPath, "records", len(seed))
 		}
 	}
 	s.start()
@@ -485,23 +482,11 @@ func (s *scheduler) releaseTicket(t *ticket) {
 	s.removePending(t)
 }
 
-// recordHold appends a completed hold to the timeline history and prunes any
-// records older than historyRetention. Holds are appended in end order, which
-// (since only one ticket holds the GPU at a time) is also start order, so the
-// oldest live at the front of the slice.
 func (s *scheduler) recordHold(t *ticket, end time.Time) {
 	if t.grantedAt.IsZero() {
 		return
 	}
-	rec := types.HoldRecord{
-		ID:        t.id,
-		Name:      t.name,
-		Priority:  t.priority,
-		Kind:      t.kind,
-		Model:     t.model,
-		StartedAt: t.grantedAt,
-		EndedAt:   end,
-	}
+	rec := types.HoldRecord{ID: t.id, Name: t.name, Priority: t.priority, Kind: t.kind, Model: t.model, StartedAt: t.grantedAt, EndedAt: end}
 	s.history = append(s.history, rec)
 	if s.sink != nil {
 		s.sink(rec)
@@ -519,22 +504,14 @@ func (s *scheduler) recordHold(t *ticket, end time.Time) {
 func (s *scheduler) History(since time.Time) []types.HoldRecord {
 	var out []types.HoldRecord
 	if !s.do(func() {
-		for _, h := range s.history {
-			if h.EndedAt.After(since) {
-				out = append(out, h)
+		for _, record := range s.history {
+			if record.EndedAt.After(since) {
+				out = append(out, record)
 			}
 		}
 		if s.holder != nil && !s.holder.grantedAt.IsZero() {
 			h := s.holder
-			out = append(out, types.HoldRecord{
-				ID:        h.id,
-				Name:      h.name,
-				Priority:  h.priority,
-				Kind:      h.kind,
-				Model:     h.model,
-				StartedAt: h.grantedAt,
-				// EndedAt left zero: still in progress.
-			})
+			out = append(out, types.HoldRecord{ID: h.id, Name: h.name, Priority: h.priority, Kind: h.kind, Model: h.model, StartedAt: h.grantedAt})
 		}
 	}) {
 		return nil

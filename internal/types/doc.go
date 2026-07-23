@@ -15,8 +15,10 @@ package types
 //	llamaswap.New(cfg types.LlamaSwapCfg, log *slog.Logger) types.Evictor
 //	queue.New(cfg types.SchedulerConfig, ev types.Evictor, log *slog.Logger) types.Scheduler
 //	proxy.New(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, log *slog.Logger) *proxy.Handler
+//	proxy.NewObserved(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, activity types.ActivityStore, log *slog.Logger) *proxy.Handler
 //	lease.New(sched types.Scheduler, ks types.KeyStore, cfg types.LeaseCfg, log *slog.Logger) *lease.Handler
 //	web.New(sched types.Scheduler, ks types.KeyStore, log *slog.Logger) *web.Handler
+//	web.NewObserved(sched types.Scheduler, ks types.KeyStore, activity types.ActivityStore, log *slog.Logger) *web.Handler
 //
 // Each of *proxy.Handler, *lease.Handler, *web.Handler implements http.Handler
 // (has ServeHTTP) AND additionally exposes:
@@ -30,7 +32,7 @@ package types
 //
 //	proxy:  "/v1/"                       OpenAI-compatible endpoints (chat/completions, models, ...)
 //	lease:  "/lease" and "/lease/"       the cooperative lease API (see below)
-//	web:    "/"                          console UI, plus "/api/keys", "/api/queue", "/api/queue/stream", "/api/history"
+//	web:    "/"                          console UI, queue/key APIs, and "/api/activity[/stream|/{id}]"
 //
 // The lease API surface (all JSON)
 // --------------------------------

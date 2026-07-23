@@ -8,6 +8,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -34,10 +35,11 @@ const anonymousName = "anon"
 
 // Handler reverse-proxies OpenAI-compatible requests through the GPU scheduler.
 type Handler struct {
-	sched types.Scheduler
-	ks    types.KeyStore
-	cfg   types.LlamaSwapCfg
-	log   *slog.Logger
+	sched    types.Scheduler
+	ks       types.KeyStore
+	cfg      types.LlamaSwapCfg
+	log      *slog.Logger
+	activity types.ActivityStore
 
 	proxy *httputil.ReverseProxy
 }
@@ -45,15 +47,21 @@ type Handler struct {
 // New constructs a proxy Handler. The signature matches the frozen wiring
 // contract in internal/types/doc.go exactly.
 func New(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, log *slog.Logger) *Handler {
+	return NewObserved(sched, ks, cfg, nil, log)
+}
+
+// NewObserved constructs a proxy that also records normalized LLM activity.
+func NewObserved(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, activity types.ActivityStore, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
 
 	h := &Handler{
-		sched: sched,
-		ks:    ks,
-		cfg:   cfg,
-		log:   log,
+		sched:    sched,
+		ks:       ks,
+		cfg:      cfg,
+		log:      log,
+		activity: activity,
 	}
 
 	// Build the reverse proxy targeting the upstream base URL. httputil's
@@ -72,9 +80,22 @@ func New(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, log *
 		// Fires on upstream dial/stream errors and on client disconnects. We do
 		// not write a body if the client is gone; otherwise emit a 502.
 		h.log.Warn("proxy: upstream error", "path", r.URL.Path, "err", err)
+		if c := captureFromContext(r.Context()); c != nil {
+			c.fail(err.Error(), r.Context().Err() != nil)
+		}
 		if r.Context().Err() == nil {
 			w.WriteHeader(http.StatusBadGateway)
 		}
+	}
+	rp.ModifyResponse = func(resp *http.Response) error {
+		c := captureFromContext(resp.Request.Context())
+		if c != nil {
+			c.status = resp.StatusCode
+			c.noBody = resp.Request.Method == http.MethodHead || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified
+			c.parser = newResponseParser(resp.Header.Get("Content-Type"), c.emit)
+			resp.Body = &observedBody{ReadCloser: resp.Body, capture: c}
+		}
+		return nil
 	}
 	h.proxy = rp
 
@@ -101,13 +122,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		prio = info.Priority
 	}
 
-	// 2. Model peek — buffer the body, decode just the "model" field, then
-	// restore r.Body so the upstream receives the identical bytes.
-	model := h.peekModelAndRestore(r)
+	// 2. Safely inspect display metadata, then restore the exact request body.
+	model, prompt, inputTools := h.peekRequestAndRestore(r)
+	requestID := newRequestID()
+	var capture *responseCapture
+	if h.activity != nil {
+		h.activity.Begin(types.LLMActivity{
+			ID: requestID, Name: name, Priority: prio, Model: model,
+			Endpoint: r.URL.Path, Prompt: prompt, ToolCalls: inputTools,
+			EnqueuedAt: time.Now(),
+		})
+		capture = &responseCapture{id: requestID, store: h.activity, ctx: r.Context()}
+		r = r.WithContext(context.WithValue(r.Context(), captureContextKey{}, capture))
+	}
 
 	// 3. Acquire a GPU ticket and wait for the grant.
 	ticket := h.sched.Acquire(types.AcquireSpec{
-		ID:       newRequestID(),
+		ID:       requestID,
 		Name:     name,
 		Priority: prio,
 		Kind:     types.KindLLM,
@@ -121,12 +152,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	select {
 	case <-ticket.Granted():
-		// Proceed below.
+		if h.activity != nil {
+			h.activity.Granted(requestID, time.Now())
+		}
 	case <-r.Context().Done():
 		// Client gave up before we ever got the GPU. Release the queued ticket
 		// and abandon; the upstream was never contacted.
 		release()
 		h.log.Info("proxy: client canceled before grant", "name", name, "model", string(model))
+		if capture != nil {
+			capture.fail("client canceled before GPU grant", true)
+		}
 		w.WriteHeader(http.StatusRequestTimeout)
 		return
 	}
@@ -142,13 +178,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.proxy.ServeHTTP(w, r)
 }
 
-// peekModelAndRestore reads up to maxModelPeekBytes of the request body to find
-// the top-level "model" string, then restores r.Body (and Content-Length) so
-// the upstream receives the identical, complete body. Bodies larger than the
-// cap, or non-JSON bodies, yield types.Model("") but are still proxied intact.
-func (h *Handler) peekModelAndRestore(r *http.Request) types.Model {
+// peekRequestAndRestore reads bounded, safe display metadata and restores the
+// exact body for the upstream. Headers and API keys are never observed.
+func (h *Handler) peekRequestAndRestore(r *http.Request) (types.Model, string, []types.ToolCall) {
 	if r.Body == nil {
-		return types.Model("")
+		return "", "", nil
 	}
 
 	limited := io.LimitReader(r.Body, maxModelPeekBytes+1)
@@ -157,7 +191,7 @@ func (h *Handler) peekModelAndRestore(r *http.Request) types.Model {
 		// Best-effort: restore whatever we managed to read so the proxy still
 		// forwards it, and skip model parsing.
 		h.restoreBody(r, buf)
-		return types.Model("")
+		return "", "", nil
 	}
 
 	if len(buf) > maxModelPeekBytes {
@@ -168,14 +202,14 @@ func (h *Handler) peekModelAndRestore(r *http.Request) types.Model {
 		r.Body = io.NopCloser(combined)
 		r.ContentLength = -1
 		r.Header.Del("Content-Length")
-		return types.Model("")
+		return "", "", nil
 	}
 
 	// We hold the whole body; close the original and restore an exact copy.
 	_ = r.Body.Close()
 	h.restoreBody(r, buf)
 
-	return parseModel(buf)
+	return parseRequest(buf)
 }
 
 // restoreBody sets r.Body to a fresh reader over buf and syncs the length
@@ -188,16 +222,77 @@ func (h *Handler) restoreBody(r *http.Request, buf []byte) {
 
 // parseModel decodes only the top-level "model" field from a JSON object.
 func parseModel(buf []byte) types.Model {
+	model, _, _ := parseRequest(buf)
+	return model
+}
+
+func parseRequest(buf []byte) (types.Model, string, []types.ToolCall) {
 	if len(bytes.TrimSpace(buf)) == 0 {
-		return types.Model("")
+		return "", "", nil
 	}
 	var probe struct {
-		Model string `json:"model"`
+		Model    string `json:"model"`
+		Input    any    `json:"input"`
+		Messages []struct {
+			Role       string `json:"role"`
+			Content    any    `json:"content"`
+			ToolCallID string `json:"tool_call_id"`
+			ToolCalls  []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
 	}
 	if err := json.Unmarshal(buf, &probe); err != nil {
-		return types.Model("")
+		return "", "", nil
 	}
-	return types.Model(probe.Model)
+	var prompt string
+	toolByID := make(map[string]int)
+	var tools []types.ToolCall
+	for _, message := range probe.Messages {
+		if message.Role == "user" {
+			prompt = contentText(message.Content)
+		}
+		for _, call := range message.ToolCalls {
+			toolByID[call.ID] = len(tools)
+			tools = append(tools, types.ToolCall{ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments})
+		}
+		if message.Role == "tool" {
+			result := contentText(message.Content)
+			if i, ok := toolByID[message.ToolCallID]; ok {
+				tools[i].Result = result
+			} else {
+				tools = append(tools, types.ToolCall{ID: message.ToolCallID, Result: result})
+			}
+		}
+	}
+	if prompt == "" && probe.Input != nil {
+		prompt = contentText(probe.Input)
+	}
+	return types.Model(probe.Model), prompt, tools
+}
+
+func contentText(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []any:
+		var out strings.Builder
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				if text, ok := m["text"].(string); ok {
+					out.WriteString(text)
+				}
+			}
+		}
+		return out.String()
+	default:
+		raw, _ := json.Marshal(value)
+		return string(raw)
+	}
 }
 
 // bearerToken extracts the API key from "Authorization: Bearer X"

@@ -5,6 +5,7 @@
 //	types  ← (implemented by) queue      [Scheduler, Ticket]
 //	types  ← (implemented by) keys       [KeyStore]
 //	types  ← (implemented by) llamaswap  [Evictor]
+//	types  ← (implemented by) activity   [ActivityStore]
 //	types  → (consumed by)    proxy      [Scheduler + KeyStore]
 //	types  → (consumed by)    lease      [Scheduler + KeyStore]
 //	types  → (consumed by)    web        [Scheduler + KeyStore]
@@ -15,6 +16,7 @@ package types
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -117,8 +119,8 @@ type QueueSnapshot struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// HoldRecord is one GPU hold (a granted acquisition) for the timeline view.
-// A record with a zero EndedAt is still in progress (the current holder).
+// HoldRecord is one GPU hold for the timeline view. A zero EndedAt means the
+// holder is still active.
 type HoldRecord struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -127,6 +129,75 @@ type HoldRecord struct {
 	Model     Model     `json:"model,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at,omitzero"`
+}
+
+// ActivityStatus describes the lifecycle of an observed LLM HTTP request.
+type ActivityStatus string
+
+const (
+	ActivityQueued    ActivityStatus = "queued"
+	ActivityRunning   ActivityStatus = "running"
+	ActivityCompleted ActivityStatus = "completed"
+	ActivityError     ActivityStatus = "error"
+	ActivityCanceled  ActivityStatus = "canceled"
+)
+
+// ToolCall is a provider-neutral view of a model tool call. Arguments and
+// results deliberately remain raw JSON/text: the console must not know how to
+// render individual tools.
+type ToolCall struct {
+	Index     int    `json:"index,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Result    string `json:"result,omitempty"`
+}
+
+// LLMActivity is one proxied OpenAI-compatible request and its observed output.
+// It never includes request headers or API keys.
+type LLMActivity struct {
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Priority     Priority        `json:"priority"`
+	Model        Model           `json:"model,omitempty"`
+	Endpoint     string          `json:"endpoint"`
+	Status       ActivityStatus  `json:"status"`
+	Prompt       string          `json:"prompt,omitempty"`
+	Output       string          `json:"output,omitempty"`
+	ToolCalls    []ToolCall      `json:"tool_calls,omitempty"`
+	Usage        json.RawMessage `json:"usage,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	Truncated    bool            `json:"truncated,omitempty"`
+	EnqueuedAt   time.Time       `json:"enqueued_at"`
+	GrantedAt    time.Time       `json:"granted_at,omitzero"`
+	FirstTokenAt time.Time       `json:"first_token_at,omitzero"`
+	CompletedAt  time.Time       `json:"completed_at,omitzero"`
+	QueueWaitMs  int64           `json:"queue_wait_ms,omitempty"`
+	FirstTokenMs int64           `json:"first_token_ms,omitempty"`
+	OutputBytes  int             `json:"output_bytes"`
+	OutputTokens int             `json:"output_tokens,omitempty"`
+	TokensPerSec float64         `json:"tokens_per_sec,omitempty"`
+}
+
+// ActivityDelta is an incremental provider-neutral update extracted from an
+// upstream response stream.
+type ActivityDelta struct {
+	Text     string
+	ToolCall *ToolCall
+	Usage    json.RawMessage
+}
+
+// ActivityStore records live requests, retains history, and fans snapshots out
+// to console subscribers. Implementations must not block the proxy stream.
+type ActivityStore interface {
+	Begin(LLMActivity)
+	Granted(id string, at time.Time)
+	Append(id string, delta ActivityDelta, at time.Time)
+	Complete(id string, at time.Time)
+	Fail(id, message string, canceled bool, at time.Time)
+	List() []LLMActivity
+	Get(id string) (LLMActivity, bool)
+	Subscribe() (<-chan LLMActivity, func())
 }
 
 // Scheduler owns the single GPU priority queue. Implemented by package queue;
@@ -140,9 +211,8 @@ type Scheduler interface {
 	// Snapshot returns the current holder + ordered pending list + warm-model
 	// state for display.
 	Snapshot() QueueSnapshot
-	// History returns completed GPU holds that ended at or after `since`,
-	// oldest first, plus the current holder as an open record (zero EndedAt).
-	// Used by the console timeline.
+	// History returns completed GPU holds after since plus the active holder as
+	// an open record. It backs the Overview timeline.
 	History(since time.Time) []HoldRecord
 	// Shutdown stops the scheduler goroutine, releasing any holder.
 	Shutdown(ctx context.Context) error
@@ -195,12 +265,20 @@ type Config struct {
 	TTL               TTLCfg        `yaml:"ttl"`
 	Preemption        PreemptionCfg `yaml:"preemption"`
 	Lease             LeaseCfg      `yaml:"lease"`
+	Activity          ActivityCfg   `yaml:"activity"`
 	AnonymousPriority Priority      `yaml:"anonymousPriority"`
 	Keys              []KeyInfo     `yaml:"keys"`
-	// HistoryLog is the path to the append-only JSONL file the scheduler
-	// persists completed GPU holds to (for the console timeline). Defaults to
-	// "history.jsonl" next to the config file; set "" to disable persistence.
+	// HistoryLog persists completed GPU holds for the Overview timeline.
+	// Empty uses a history.jsonl next to the config file; "none" disables it.
 	HistoryLog string `yaml:"historyLog"`
+}
+
+// ActivityCfg controls LLM output observation and local history retention.
+type ActivityCfg struct {
+	HistoryPath    string `yaml:"historyPath"`
+	MaxRequests    int    `yaml:"maxRequests"`
+	MaxOutputBytes int    `yaml:"maxOutputBytes"`
+	RetentionHours int    `yaml:"retentionHours"`
 }
 
 // LlamaSwapCfg configures the upstream llama-swap fronted by the proxy/evictor.
@@ -230,10 +308,8 @@ type LeaseCfg struct {
 // SchedulerConfig is the subset of Config the scheduler needs. cmd derives it
 // from Config when constructing the queue.
 type SchedulerConfig struct {
-	TTL        TTLCfg
-	Preemption PreemptionCfg
-	Lease      LeaseCfg
-	// HistoryPath, if non-empty, is the JSONL file completed holds are
-	// persisted to and reloaded from on startup.
+	TTL         TTLCfg
+	Preemption  PreemptionCfg
+	Lease       LeaseCfg
 	HistoryPath string
 }

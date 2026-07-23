@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	activitystore "github.com/aiguy110/gpu-turnstile/internal/activity"
 	"github.com/aiguy110/gpu-turnstile/internal/types"
 )
 
@@ -167,6 +168,39 @@ func TestProxyStreamsResponse(t *testing.T) {
 	}
 	if n := ticket.releases(); n != 1 {
 		t.Errorf("Release called %d times, want exactly 1", n)
+	}
+}
+
+func TestProxyObservesStreamingTextAndGenericToolCall(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"hello "}}]}`+"\n\n")
+		io.WriteString(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"lookup","arguments":"{\"q\":"}}]}}]}`+"\n\n")
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"world","tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}],"usage":{"completion_tokens":2}}`+"\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	store, err := activitystore.New(types.ActivityCfg{}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := &fakeScheduler{ticket: newFakeTicket(true)}
+	h := NewObserved(sched, &fakeKeyStore{anon: 1}, types.LlamaSwapCfg{BaseURL: upstream.URL}, store, testLogger())
+	reqBody := `{"model":"m","messages":[{"role":"user","content":"say hi"}]}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody)))
+
+	list := store.List()
+	if len(list) != 1 {
+		t.Fatalf("activity count = %d", len(list))
+	}
+	got := list[0]
+	if got.Status != types.ActivityCompleted || got.Prompt != "say hi" || got.Output != "hello world" || got.OutputTokens != 2 {
+		t.Fatalf("activity = %+v", got)
+	}
+	if len(got.ToolCalls) != 1 || got.ToolCalls[0].Name != "lookup" || got.ToolCalls[0].Arguments != `{"q":1}` {
+		t.Fatalf("tool calls = %+v", got.ToolCalls)
 	}
 }
 

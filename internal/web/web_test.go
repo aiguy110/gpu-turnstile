@@ -12,19 +12,20 @@ import (
 	"testing"
 	"time"
 
+	activitystore "github.com/aiguy110/gpu-turnstile/internal/activity"
 	"github.com/aiguy110/gpu-turnstile/internal/types"
 )
 
 // ---- fakes ----
 
 type fakeScheduler struct {
-	snap types.QueueSnapshot
-	hist []types.HoldRecord
+	snap    types.QueueSnapshot
+	history []types.HoldRecord
 }
 
 func (f *fakeScheduler) Acquire(spec types.AcquireSpec) types.Ticket { return nil }
 func (f *fakeScheduler) Snapshot() types.QueueSnapshot               { return f.snap }
-func (f *fakeScheduler) History(time.Time) []types.HoldRecord        { return f.hist }
+func (f *fakeScheduler) History(time.Time) []types.HoldRecord        { return f.history }
 func (f *fakeScheduler) Shutdown(ctx context.Context) error          { return nil }
 
 type fakeKeyStore struct {
@@ -99,6 +100,38 @@ func TestQueueSnapshotJSON(t *testing.T) {
 	}
 	if got.WarmModel != "qwen" || got.WarmTier != 3 {
 		t.Fatalf("warm mismatch: model=%q tier=%d", got.WarmModel, got.WarmTier)
+	}
+}
+
+func TestActivityListAndDetail(t *testing.T) {
+	store, err := activitystore.New(types.ActivityCfg{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Begin(types.LLMActivity{ID: "req-1", Name: "pi", Model: "qwen", Prompt: "hello", Output: "full output", EnqueuedAt: time.Now()})
+	h := NewObserved(&fakeScheduler{}, &fakeKeyStore{}, store, nil)
+
+	for _, path := range []string{"/api/activity", "/api/activity/req-1"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "req-1") || !strings.Contains(rec.Body.String(), "hello") {
+			t.Fatalf("GET %s: status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+		if path == "/api/activity" && strings.Contains(rec.Body.String(), "full output") {
+			t.Fatalf("list endpoint included full output: %s", rec.Body.String())
+		}
+		if path != "/api/activity" && !strings.Contains(rec.Body.String(), "full output") {
+			t.Fatalf("detail endpoint omitted output: %s", rec.Body.String())
+		}
+	}
+}
+
+func TestHistoryWindow(t *testing.T) {
+	h := newTestHandler(&fakeScheduler{history: []types.HoldRecord{{ID: "hold-1", Name: "pi", StartedAt: time.Now().Add(-time.Minute), EndedAt: time.Now()}}}, &fakeKeyStore{})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/history?window=1h", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "hold-1") {
+		t.Fatalf("history response: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
