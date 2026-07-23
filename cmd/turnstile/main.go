@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/aiguy110/gpu-turnstile/internal/activity"
 	"github.com/aiguy110/gpu-turnstile/internal/keys"
 	"github.com/aiguy110/gpu-turnstile/internal/lease"
 	"github.com/aiguy110/gpu-turnstile/internal/llamaswap"
@@ -61,14 +63,19 @@ func run(configPath string, log *slog.Logger) error {
 	}
 	evictor := llamaswap.New(cfg.LlamaSwap, log)
 	sched := queue.New(types.SchedulerConfig{
-		TTL:        cfg.TTL,
-		Preemption: cfg.Preemption,
-		Lease:      cfg.Lease,
+		TTL:         cfg.TTL,
+		Preemption:  cfg.Preemption,
+		Lease:       cfg.Lease,
+		HistoryPath: cfg.HistoryLog,
 	}, evictor, log)
+	activityStore, err := activity.New(cfg.Activity, log)
+	if err != nil {
+		return fmt.Errorf("activity history: %w", err)
+	}
 
-	proxyH := proxy.New(sched, ks, cfg.LlamaSwap, log)
+	proxyH := proxy.NewObserved(sched, ks, cfg.LlamaSwap, activityStore, log)
 	leaseH := lease.New(sched, ks, cfg.Lease, log)
-	webH := web.New(sched, ks, log)
+	webH := web.NewObserved(sched, ks, activityStore, log)
 
 	// Mount on one root mux. More-specific patterns win, so /v1/ and /lease
 	// take precedence over the web console's catch-all "/".
@@ -108,6 +115,9 @@ func run(configPath string, log *slog.Logger) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Warn("http shutdown", "err", err)
 	}
+	if err := activityStore.Close(); err != nil {
+		log.Warn("flush activity history", "err", err)
+	}
 	if err := sched.Shutdown(shutdownCtx); err != nil {
 		log.Warn("scheduler shutdown", "err", err)
 	}
@@ -144,6 +154,24 @@ func loadConfig(path string) (types.Config, error) {
 	}
 	if cfg.Lease.PollAfterMs == 0 {
 		cfg.Lease.PollAfterMs = 1000
+	}
+	if cfg.Activity.HistoryPath == "" {
+		cfg.Activity.HistoryPath = ".turnstile-activity.json"
+	}
+	if cfg.Activity.MaxRequests == 0 {
+		cfg.Activity.MaxRequests = 500
+	}
+	if cfg.Activity.MaxOutputBytes == 0 {
+		cfg.Activity.MaxOutputBytes = 1 << 20
+	}
+	if cfg.Activity.RetentionHours == 0 {
+		cfg.Activity.RetentionHours = 168
+	}
+	switch cfg.HistoryLog {
+	case "":
+		cfg.HistoryLog = filepath.Join(filepath.Dir(path), "history.jsonl")
+	case "none", "-":
+		cfg.HistoryLog = ""
 	}
 	return cfg, nil
 }

@@ -33,6 +33,19 @@ lease:
   heartbeatTimeoutSeconds: 30
   pollAfterMs: 1000
 
+# Completed GPU holds for the Overview timeline. Empty defaults to history.jsonl
+# beside config.yaml; set "none" to disable persistence.
+historyLog: "history.jsonl"
+
+# Live and historical LLM output shown in the console. Only normalized prompt,
+# model output, tool name/arguments/result, and timing metadata are stored;
+# authorization headers and API keys are never captured.
+activity:
+  historyPath: ".turnstile-activity.json"
+  maxRequests: 500
+  maxOutputBytes: 1048576
+  retentionHours: 168
+
 # Priority tiers. Higher number = higher priority. Anonymous (unknown/missing
 # key) is admitted at anonymousPriority (below every named key by default).
 anonymousPriority: 0

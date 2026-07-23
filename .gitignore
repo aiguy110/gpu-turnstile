@@ -7,6 +7,8 @@
 /config.yaml
 *.local.yaml
 keys.db
+.turnstile-activity.json
+history.jsonl
 *.log
 
 # Go

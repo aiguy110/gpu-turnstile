@@ -116,12 +116,27 @@ type scheduler struct {
 	warmTier        types.Priority
 	lastLLMComplete time.Time
 	deferredID      string // id of the waiter we last logged a grace-deferral for
+	history         []types.HoldRecord
+	sink            func(types.HoldRecord)
+	hlog            *historyLog
 }
+
+const historyRetention = 7 * 24 * time.Hour
 
 // New constructs the scheduler and starts its owner goroutine. Signature is
 // fixed by internal/types/doc.go.
 func New(cfg types.SchedulerConfig, ev types.Evictor, log *slog.Logger) types.Scheduler {
 	s := newScheduler(cfg, ev, log)
+	if cfg.HistoryPath != "" {
+		hlog, seed, err := openHistoryLog(cfg.HistoryPath, historyRetention, s.now())
+		if err != nil {
+			s.log.Warn("history log disabled", "path", cfg.HistoryPath, "err", err)
+		} else {
+			s.history = seed
+			s.hlog = hlog
+			s.sink = hlog.append
+		}
+	}
 	s.start()
 	return s
 }
@@ -255,6 +270,9 @@ func (s *scheduler) shutdownRelease() {
 		t.state = types.StateReleased
 	}
 	s.pending = nil
+	if s.hlog != nil {
+		_ = s.hlog.Close()
+	}
 }
 
 // ---- owner-goroutine logic ----
@@ -453,13 +471,52 @@ func (s *scheduler) releaseTicket(t *ticket) {
 	}
 	t.state = types.StateReleased
 	if s.holder == t {
+		now := s.now()
+		s.recordHold(t, now)
 		if t.kind == types.KindLLM {
-			s.lastLLMComplete = s.now() // LLM request completed: restart grace
+			s.lastLLMComplete = now // LLM request completed: restart grace
 		}
 		s.holder = nil
 		return
 	}
 	s.removePending(t)
+}
+
+func (s *scheduler) recordHold(t *ticket, end time.Time) {
+	if t.grantedAt.IsZero() {
+		return
+	}
+	rec := types.HoldRecord{ID: t.id, Name: t.name, Priority: t.priority, Kind: t.kind, Model: t.model, StartedAt: t.grantedAt, EndedAt: end}
+	s.history = append(s.history, rec)
+	if s.sink != nil {
+		s.sink(rec)
+	}
+	cutoff := end.Add(-historyRetention)
+	drop := 0
+	for drop < len(s.history) && s.history[drop].EndedAt.Before(cutoff) {
+		drop++
+	}
+	if drop > 0 {
+		s.history = append(s.history[:0], s.history[drop:]...)
+	}
+}
+
+func (s *scheduler) History(since time.Time) []types.HoldRecord {
+	var out []types.HoldRecord
+	if !s.do(func() {
+		for _, record := range s.history {
+			if record.EndedAt.After(since) {
+				out = append(out, record)
+			}
+		}
+		if s.holder != nil && !s.holder.grantedAt.IsZero() {
+			h := s.holder
+			out = append(out, types.HoldRecord{ID: h.id, Name: h.name, Priority: h.priority, Kind: h.kind, Model: h.model, StartedAt: h.grantedAt})
+		}
+	}) {
+		return nil
+	}
+	return out
 }
 
 func (s *scheduler) removePending(t *ticket) {

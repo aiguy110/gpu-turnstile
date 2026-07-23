@@ -43,6 +43,12 @@ internal/web       console + live queue visualization
 internal/llamaswap unload client
 ```
 
+The console's **LLM activity** view follows running responses live and retains a
+bounded local history. It shows normalized model text plus generic, expandable
+tool-call arguments/results; it never records authorization headers or API keys.
+Retention, history size, and per-output capture limits are configured under
+`activity`.
+
 ## Config
 
 Copy `config.example.yaml` to `config.yaml` and edit. See that file for the

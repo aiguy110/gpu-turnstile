@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aiguy110/gpu-turnstile/internal/types"
 )
@@ -78,8 +79,9 @@ func (s *schedulerAdapter) Acquire(spec types.AcquireSpec) types.Ticket {
 	s.lastSpec = spec
 	return s.ticket
 }
-func (s *schedulerAdapter) Snapshot() types.QueueSnapshot    { return types.QueueSnapshot{} }
-func (s *schedulerAdapter) Shutdown(_ context.Context) error { return nil }
+func (s *schedulerAdapter) Snapshot() types.QueueSnapshot        { return types.QueueSnapshot{} }
+func (s *schedulerAdapter) History(time.Time) []types.HoldRecord { return nil }
+func (s *schedulerAdapter) Shutdown(_ context.Context) error     { return nil }
 
 type fakeKeyStore struct {
 	info  types.KeyInfo
