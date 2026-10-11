@@ -29,6 +29,21 @@ It presents two front doors over the same queue:
   lower*-priority waiter waits out that grace; an equal-or-higher-priority waiter
   collapses it to zero (so a client never blocks behind its own stale warm cache
   when switching models).
+- **Co-admission (opt-in per model):** a model listed under `models:` with
+  `slots: N` runs up to N LLM requests at once (llama-server `--parallel N`). The
+  front waiter joins the current holders when it is an LLM request for the same
+  model, a slot is free, and (with `ctxPool`) the in-flight requests' estimated
+  `prompt + max_tokens` plus its own fits the pool. It never skips ahead: if the
+  front waiter can't join, everyone behind it waits too. Leases and other models
+  still need an idle GPU. Models without an entry behave exactly as before.
+- **Virtual models:** names under `virtual:` map to a real `models:` entry. The
+  proxy rewrites `model` to the backend, deep-merges `inject` into the body
+  (e.g. turn thinking off, pin `id_slot`), and answers 400
+  `context_length_exceeded` without queueing when the estimate exceeds `maxCtx`.
+  Eviction, warm tracking, and slots all use the real name; the alias shows in the
+  console and activity history. Prompt tokens are estimated as `ceil(chars/3)`
+  (pessimistic) over messages, tool definitions, and `prompt`/`input`; bodies over
+  4 MiB are forwarded untouched and budgeted as the whole pool.
 
 ## Layout
 

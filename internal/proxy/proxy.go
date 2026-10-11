@@ -40,6 +40,7 @@ type Handler struct {
 	cfg      types.LlamaSwapCfg
 	log      *slog.Logger
 	activity types.ActivityStore
+	routing  types.RoutingCfg
 
 	proxy *httputil.ReverseProxy
 }
@@ -47,11 +48,12 @@ type Handler struct {
 // New constructs a proxy Handler. The signature matches the frozen wiring
 // contract in internal/types/doc.go exactly.
 func New(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, log *slog.Logger) *Handler {
-	return NewObserved(sched, ks, cfg, nil, log)
+	return NewObserved(sched, ks, cfg, types.RoutingCfg{}, nil, log)
 }
 
-// NewObserved constructs a proxy that also records normalized LLM activity.
-func NewObserved(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, activity types.ActivityStore, log *slog.Logger) *Handler {
+// NewObserved constructs a proxy that also records normalized LLM activity and
+// applies virtual-model routing and context estimates from routing.
+func NewObserved(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, routing types.RoutingCfg, activity types.ActivityStore, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -62,6 +64,7 @@ func NewObserved(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCf
 		cfg:      cfg,
 		log:      log,
 		activity: activity,
+		routing:  routing,
 	}
 
 	// Build the reverse proxy targeting the upstream base URL. httputil's
@@ -122,13 +125,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		prio = info.Priority
 	}
 
-	// 2. Safely inspect display metadata, then restore the exact request body.
-	model, prompt, inputTools := h.peekRequestAndRestore(r)
+	// 2. Safely inspect display metadata, then restore the exact request body
+	// (rewritten when it targets a virtual model).
+	model, prompt, inputTools, rt := h.peekRequestAndRestore(r)
+	if rt.reject != "" {
+		h.log.Info("proxy: rejected", "name", name, "model", string(rt.alias), "reason", rt.reject)
+		writeContextError(w, rt.reject)
+		return
+	}
 	requestID := newRequestID()
 	var capture *responseCapture
 	if h.activity != nil {
 		h.activity.Begin(types.LLMActivity{
-			ID: requestID, Name: name, Priority: prio, Model: model,
+			ID: requestID, Name: name, Priority: prio, Model: model, Alias: rt.alias,
 			Endpoint: r.URL.Path, Prompt: prompt, ToolCalls: inputTools,
 			EnqueuedAt: time.Now(),
 		})
@@ -138,11 +147,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Acquire a GPU ticket and wait for the grant.
 	ticket := h.sched.Acquire(types.AcquireSpec{
-		ID:       requestID,
-		Name:     name,
-		Priority: prio,
-		Kind:     types.KindLLM,
-		Model:    model,
+		ID:        requestID,
+		Name:      name,
+		Priority:  prio,
+		Kind:      types.KindLLM,
+		Model:     model,
+		Alias:     rt.alias,
+		CtxTokens: rt.ctxTokens,
 	})
 
 	// Guarantee release exactly once, no matter which path we exit through.
@@ -179,10 +190,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // peekRequestAndRestore reads bounded, safe display metadata and restores the
-// exact body for the upstream. Headers and API keys are never observed.
-func (h *Handler) peekRequestAndRestore(r *http.Request) (types.Model, string, []types.ToolCall) {
+// body for the upstream: byte-identical, unless the request names a virtual
+// model, in which case the rewritten body is forwarded. Headers and API keys
+// are never observed.
+func (h *Handler) peekRequestAndRestore(r *http.Request) (types.Model, string, []types.ToolCall, routeResult) {
 	if r.Body == nil {
-		return "", "", nil
+		return "", "", nil, routeResult{}
 	}
 
 	limited := io.LimitReader(r.Body, maxModelPeekBytes+1)
@@ -191,7 +204,7 @@ func (h *Handler) peekRequestAndRestore(r *http.Request) (types.Model, string, [
 		// Best-effort: restore whatever we managed to read so the proxy still
 		// forwards it, and skip model parsing.
 		h.restoreBody(r, buf)
-		return "", "", nil
+		return "", "", nil, routeResult{}
 	}
 
 	if len(buf) > maxModelPeekBytes {
@@ -202,14 +215,18 @@ func (h *Handler) peekRequestAndRestore(r *http.Request) (types.Model, string, [
 		r.Body = io.NopCloser(combined)
 		r.ContentLength = -1
 		r.Header.Del("Content-Length")
-		return "", "", nil
+		// Unparsed, so unsized: the scheduler budgets it as the whole pool.
+		return "", "", nil, routeResult{}
 	}
 
-	// We hold the whole body; close the original and restore an exact copy.
+	// We hold the whole body; close the original and restore it (rewritten for
+	// virtual models).
 	_ = r.Body.Close()
+	buf, rt := h.route(buf)
 	h.restoreBody(r, buf)
 
-	return parseRequest(buf)
+	model, prompt, tools := parseRequest(buf)
+	return model, prompt, tools, rt
 }
 
 // restoreBody sets r.Body to a fresh reader over buf and syncs the length

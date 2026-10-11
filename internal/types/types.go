@@ -65,6 +65,13 @@ type AcquireSpec struct {
 	Model Model
 	// EstSeconds is an optional caller-supplied duration estimate, for display.
 	EstSeconds int
+	// Alias is the client-facing virtual model name when the request was routed
+	// through a VirtualModelCfg (Model then holds the real backend). Display only.
+	Alias Model
+	// CtxTokens is the estimated context the request will occupy (prompt +
+	// max_tokens), used for the per-model context budget. 0 = unknown, which the
+	// scheduler budgets as the whole pool when one is configured.
+	CtxTokens int
 }
 
 // TicketStatus is a point-in-time snapshot of a Ticket, safe to serialize.
@@ -74,12 +81,14 @@ type TicketStatus struct {
 	Priority Priority    `json:"priority"`
 	Kind     Kind        `json:"kind"`
 	Model    Model       `json:"model,omitempty"`
+	Alias    Model       `json:"alias,omitempty"`
 	State    TicketState `json:"state"`
 	// Position is 0 for the current holder or the next-to-be-granted; larger
 	// values are further back in service order (priority desc, then FIFO).
 	Position        int       `json:"position"`
 	RevokeRequested bool      `json:"revoke_requested"`
 	EstSeconds      int       `json:"est_seconds,omitempty"`
+	CtxTokens       int       `json:"ctx_tokens,omitempty"`
 	EnqueuedAt      time.Time `json:"enqueued_at"`
 	GrantedAt       time.Time `json:"granted_at,omitzero"`
 }
@@ -106,8 +115,12 @@ type Ticket interface {
 
 // QueueSnapshot is the whole-queue view for the web console.
 type QueueSnapshot struct {
-	// Holder is the current GPU holder, or nil when the GPU is idle.
+	// Holder is the first current GPU holder, or nil when the GPU is idle. Kept
+	// for older clients; Holders lists every holder.
 	Holder *TicketStatus `json:"holder"`
+	// Holders are all current holders: several LLM requests for one model when
+	// it is configured with slots > 1, otherwise at most one.
+	Holders []TicketStatus `json:"holders"`
 	// Pending is the ordered list of waiters (service order).
 	Pending []TicketStatus `json:"pending"`
 	// WarmModel is the llama-swap model currently resident (KV cache warm), or
@@ -127,6 +140,7 @@ type HoldRecord struct {
 	Priority  Priority  `json:"priority"`
 	Kind      Kind      `json:"kind"`
 	Model     Model     `json:"model,omitempty"`
+	Alias     Model     `json:"alias,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at,omitzero"`
 }
@@ -160,6 +174,7 @@ type LLMActivity struct {
 	Name         string          `json:"name"`
 	Priority     Priority        `json:"priority"`
 	Model        Model           `json:"model,omitempty"`
+	Alias        Model           `json:"alias,omitempty"`
 	Endpoint     string          `json:"endpoint"`
 	Status       ActivityStatus  `json:"status"`
 	Prompt       string          `json:"prompt,omitempty"`
@@ -268,9 +283,46 @@ type Config struct {
 	Activity          ActivityCfg   `yaml:"activity"`
 	AnonymousPriority Priority      `yaml:"anonymousPriority"`
 	Keys              []KeyInfo     `yaml:"keys"`
+	// Models holds per-model concurrency settings, keyed by the real llama-swap
+	// model name. A model with no entry gets 1 slot and no context budget.
+	Models map[Model]ModelCfg `yaml:"models"`
+	// Virtual maps client-facing model names onto a real model in Models.
+	Virtual map[Model]VirtualModelCfg `yaml:"virtual"`
 	// HistoryLog persists completed GPU holds for the Overview timeline.
 	// Empty uses a history.jsonl next to the config file; "none" disables it.
 	HistoryLog string `yaml:"historyLog"`
+}
+
+// ModelCfg is the concurrency shape of one llama-swap model.
+type ModelCfg struct {
+	// Slots is the max number of concurrent LLM requests (the server's
+	// --parallel). 0 or 1 = exclusive, as before.
+	Slots int `yaml:"slots"`
+	// CtxPool is the server's total context (-c). When > 0, co-admitted
+	// requests' estimated tokens must fit in it. 0 = no budget accounting.
+	CtxPool int `yaml:"ctxPool"`
+}
+
+// VirtualModelCfg is a client-facing model name that the proxy rewrites to a
+// real backend model, with its own context limit and injected body fields.
+type VirtualModelCfg struct {
+	// Backend is the real model name; it must have an entry in Config.Models.
+	Backend Model `yaml:"backend"`
+	// MaxCtx rejects requests whose estimated prompt + max_tokens exceeds it
+	// (400 context_length_exceeded). 0 = no limit.
+	MaxCtx int `yaml:"maxCtx"`
+	// DefaultMaxTokens budgets requests that set no max_tokens. 0 = budget the
+	// rest of the context.
+	DefaultMaxTokens int `yaml:"defaultMaxTokens"`
+	// Inject is deep-merged into the JSON body (it wins over client values).
+	Inject map[string]any `yaml:"inject"`
+}
+
+// RoutingCfg is the subset of Config the proxy needs for virtual models and
+// context estimates.
+type RoutingCfg struct {
+	Models  map[Model]ModelCfg
+	Virtual map[Model]VirtualModelCfg
 }
 
 // ActivityCfg controls LLM output observation and local history retention.
@@ -312,4 +364,6 @@ type SchedulerConfig struct {
 	Preemption  PreemptionCfg
 	Lease       LeaseCfg
 	HistoryPath string
+	// Models gives per-model slots and context pool (see ModelCfg).
+	Models map[Model]ModelCfg
 }
