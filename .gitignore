@@ -5,6 +5,7 @@
 
 # Local runtime state / secrets
 /config.yaml
+/config.yaml.bak*
 *.local.yaml
 keys.db
 .turnstile-activity.json

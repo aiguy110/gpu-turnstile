@@ -67,13 +67,14 @@ func run(configPath string, log *slog.Logger) error {
 		Preemption:  cfg.Preemption,
 		Lease:       cfg.Lease,
 		HistoryPath: cfg.HistoryLog,
+		Models:      cfg.Models,
 	}, evictor, log)
 	activityStore, err := activity.New(cfg.Activity, log)
 	if err != nil {
 		return fmt.Errorf("activity history: %w", err)
 	}
 
-	proxyH := proxy.NewObserved(sched, ks, cfg.LlamaSwap, activityStore, log)
+	proxyH := proxy.NewObserved(sched, ks, cfg.LlamaSwap, types.RoutingCfg{Models: cfg.Models, Virtual: cfg.Virtual}, activityStore, log)
 	leaseH := lease.New(sched, ks, cfg.Lease, log)
 	webH := web.NewObserved(sched, ks, activityStore, log)
 
@@ -167,6 +168,9 @@ func loadConfig(path string) (types.Config, error) {
 	if cfg.Activity.RetentionHours == 0 {
 		cfg.Activity.RetentionHours = 168
 	}
+	if err := validateRouting(cfg); err != nil {
+		return cfg, err
+	}
 	switch cfg.HistoryLog {
 	case "":
 		cfg.HistoryLog = filepath.Join(filepath.Dir(path), "history.jsonl")
@@ -174,4 +178,29 @@ func loadConfig(path string) (types.Config, error) {
 		cfg.HistoryLog = ""
 	}
 	return cfg, nil
+}
+
+// validateRouting checks the models:/virtual: blocks against each other.
+func validateRouting(cfg types.Config) error {
+	for name, m := range cfg.Models {
+		if m.Slots < 0 || m.CtxPool < 0 {
+			return fmt.Errorf("models.%s: slots and ctxPool must be >= 0", name)
+		}
+	}
+	for name, v := range cfg.Virtual {
+		m, ok := cfg.Models[v.Backend]
+		if !ok {
+			return fmt.Errorf("virtual.%s: backend %q has no models: entry", name, v.Backend)
+		}
+		if _, clash := cfg.Models[name]; clash {
+			return fmt.Errorf("virtual.%s: name collides with a real model", name)
+		}
+		if v.MaxCtx < 0 || v.DefaultMaxTokens < 0 {
+			return fmt.Errorf("virtual.%s: maxCtx and defaultMaxTokens must be >= 0", name)
+		}
+		if m.CtxPool > 0 && v.MaxCtx > m.CtxPool {
+			return fmt.Errorf("virtual.%s: maxCtx %d exceeds %s ctxPool %d", name, v.MaxCtx, v.Backend, m.CtxPool)
+		}
+	}
+	return nil
 }

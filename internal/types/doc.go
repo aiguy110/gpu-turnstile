@@ -15,7 +15,7 @@ package types
 //	llamaswap.New(cfg types.LlamaSwapCfg, log *slog.Logger) types.Evictor
 //	queue.New(cfg types.SchedulerConfig, ev types.Evictor, log *slog.Logger) types.Scheduler
 //	proxy.New(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, log *slog.Logger) *proxy.Handler
-//	proxy.NewObserved(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, activity types.ActivityStore, log *slog.Logger) *proxy.Handler
+//	proxy.NewObserved(sched types.Scheduler, ks types.KeyStore, cfg types.LlamaSwapCfg, routing types.RoutingCfg, activity types.ActivityStore, log *slog.Logger) *proxy.Handler
 //	lease.New(sched types.Scheduler, ks types.KeyStore, cfg types.LeaseCfg, log *slog.Logger) *lease.Handler
 //	web.New(sched types.Scheduler, ks types.KeyStore, log *slog.Logger) *web.Handler
 //	web.NewObserved(sched types.Scheduler, ks types.KeyStore, activity types.ActivityStore, log *slog.Logger) *web.Handler
@@ -48,7 +48,11 @@ package types
 // Both proxy and lease resolve the caller's priority from the API key via
 // KeyStore.Lookup(bearerToken). On miss, use KeyStore.AnonymousPriority().
 // Nothing hard-fails on auth. The proxy reads the model from the request body's
-// "model" field to set AcquireSpec.Model.
+// "model" field to set AcquireSpec.Model. When that name is a virtual model
+// (RoutingCfg.Virtual), the proxy rewrites the body to the backend, merges its
+// inject fields, sets AcquireSpec.Model to the backend and AcquireSpec.Alias to
+// the virtual name, and may reject over-long requests (400) before Acquire.
+// For models with a ctxPool (or virtual maxCtx) it sets AcquireSpec.CtxTokens.
 //
 // Scheduler policy that package queue MUST implement
 // ==================================================
@@ -57,6 +61,14 @@ package types
 // FIFO by enqueue sequence within a priority. Admission rule: grant the GPU to
 // the front-of-queue waiter only when there is no current holder AND no strictly
 // higher-priority waiter is pending.
+//
+// Co-admission: when SchedulerConfig.Models gives the holders' model Slots > 1,
+// the front waiter (only ever the front) also joins the current holders if it
+// is an LLM request for that same model, fewer than Slots requests are held, and
+// (when CtxPool > 0) the holders' CtxTokens plus its own fit in CtxPool, where
+// an unknown size (0) counts as the whole pool. Holders are therefore empty,
+// exactly one lease, or 1..Slots LLM requests for one model. A lease or another
+// model waits until all holders release. A joiner never lowers WarmTier.
 //
 // Holds & release:
 //   - KindLLM: granted, the proxy reverse-proxies one request, then Release().

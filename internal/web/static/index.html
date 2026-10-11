@@ -263,7 +263,7 @@
 
   <div class="grid">
     <section class="panel" id="holder-panel">
-      <h2>GPU holder</h2>
+      <h2>GPU holders</h2>
       <div class="body" id="holder-body">
         <div class="holder-idle">idle</div>
         <div class="meta" id="warm-meta"></div>
@@ -416,21 +416,24 @@
     }
     warm += '<span class="chip">warm tier <b>' + esc(latest ? latest.warm_tier : 0) + '</b></span>';
 
-    var h = latest && latest.holder;
+    var holders = (latest && latest.holders) || (latest && latest.holder ? [latest.holder] : []);
     var html;
-    if (!h) {
+    if (!holders.length) {
       html = '<div class="holder-idle">GPU idle</div>';
     } else {
-      var held = h.granted_at ? fmtDuration(ageSeconds(h.granted_at)) : "—";
-      html =
-        '<div class="holder-name">' + esc(h.name) + ' ' + kindTag(h.kind) +
-        (h.revoke_requested ? '<span class="revoke-tag">revoking</span>' : '') + '</div>' +
-        '<div class="held">holding for <span class="wait" data-granted="' + esc(h.granted_at || "") + '">' + held + '</span></div>' +
-        '<div class="meta">' +
-          '<span class="chip">priority <span class="prio-pill">' + esc(h.priority) + '</span></span>' +
-          (h.model ? '<span class="chip">model <b>' + esc(h.model) + '</b></span>' : '') +
-          '<span class="chip state">' + esc(h.state) + '</span>' +
-        '</div>';
+      html = holders.map(function (h) {
+        var held = h.granted_at ? fmtDuration(ageSeconds(h.granted_at)) : "—";
+        return '<div class="holder-name">' + esc(h.name) + ' ' + kindTag(h.kind) +
+          (h.revoke_requested ? '<span class="revoke-tag">revoking</span>' : '') + '</div>' +
+          '<div class="held">holding for <span class="wait" data-granted="' + esc(h.granted_at || "") + '">' + held + '</span></div>' +
+          '<div class="meta">' +
+            '<span class="chip">priority <span class="prio-pill">' + esc(h.priority) + '</span></span>' +
+            (h.model ? '<span class="chip">model <b>' + esc(h.model) + '</b></span>' : '') +
+            (h.alias ? '<span class="chip">as <b>' + esc(h.alias) + '</b></span>' : '') +
+            (h.ctx_tokens ? '<span class="chip">ctx <b>' + esc(h.ctx_tokens) + '</b></span>' : '') +
+            '<span class="chip state">' + esc(h.state) + '</span>' +
+          '</div>';
+      }).join("");
     }
     body.innerHTML = html + '<div class="meta" id="warm-meta">' + warm + '</div>';
   }
@@ -448,7 +451,7 @@
         '<td class="pos">' + esc(w.position) + '</td>' +
         '<td>' + esc(w.name) +
           (w.revoke_requested ? '<span class="revoke-tag">revoke</span>' : '') +
-          (w.model ? '<div class="state">' + esc(w.model) + '</div>' : '') + '</td>' +
+          (w.model ? '<div class="state">' + esc(w.alias ? w.alias + " → " + w.model : w.model) + '</div>' : '') + '</td>' +
         '<td>' + kindTag(w.kind) + '</td>' +
         '<td><span class="prio-pill">' + esc(w.priority) + '</span></td>' +
         '<td class="state">' + esc(w.state) + '</td>' +
@@ -613,7 +616,7 @@
 
     var canvas, ctx, tip, legendEl, nowBtn, winWrap;
     var completed = [];   // {id,name,priority,kind,model,start,end}
-    var liveOpen = null;  // current holder as an open record (end == null)
+    var liveOpen = [];  // current holders as open records (end == null)
     var windowMs = WINDOWS["1d"];
     var viewEnd = Date.now();
     var follow = true;
@@ -631,12 +634,13 @@
 
     function normalize(r) {
       return { id: r.id, name: r.name, priority: r.priority, kind: r.kind,
-               model: r.model || "", start: toMs(r.started_at), end: toMs(r.ended_at) };
+               model: r.alias ? r.alias + " → " + r.model : (r.model || ""),
+               start: toMs(r.started_at), end: toMs(r.ended_at) };
     }
 
     function records() {
       var all = completed.slice();
-      if (liveOpen && liveOpen.start != null) all.push(liveOpen);
+      liveOpen.forEach(function (o) { if (o.start != null) all.push(o); });
       return all;
     }
 
@@ -863,13 +867,12 @@
 
     // Feed the live holder from the queue snapshot so the open bar grows in real time.
     function setLive(snap) {
-      var h = snap && snap.holder;
-      if (h && h.granted_at) {
-        liveOpen = { id: h.id, name: h.name, priority: h.priority, kind: h.kind,
-                     model: h.model || "", start: toMs(h.granted_at), end: null };
-      } else {
-        liveOpen = null;
-      }
+      var hs = (snap && snap.holders) || (snap && snap.holder ? [snap.holder] : []);
+      liveOpen = hs.filter(function (h) { return h.granted_at; }).map(function (h) {
+        return { id: h.id, name: h.name, priority: h.priority, kind: h.kind,
+                 model: h.alias ? h.alias + " → " + h.model : (h.model || ""),
+                 start: toMs(h.granted_at), end: null };
+      });
     }
 
     function init() {
@@ -976,7 +979,7 @@
     }
     $("activity-list-body").innerHTML = visible.map(function (a) {
       var stats = [];
-      if (a.model) stats.push(esc(a.model));
+      if (a.model) stats.push(esc(a.alias ? a.alias + " → " + a.model : a.model));
       stats.push(a.output_tokens ? esc(a.output_tokens.toLocaleString()) + " tok" : esc(a.output_bytes || 0) + " B");
       stats.push(esc(elapsed(a)));
       return '<article class="run ' + (a.id === selectedActivityID ? "selected" : "") + '" data-activity-id="' + esc(a.id) + '">' +

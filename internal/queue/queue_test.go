@@ -623,3 +623,162 @@ func TestHistorySinceFiltersOldRecords(t *testing.T) {
 		t.Fatalf("want only b, got %+v", hist)
 	}
 }
+
+// ---- co-admission and context budget ----
+
+func coConfig(slots, pool int) types.SchedulerConfig {
+	cfg := testConfig()
+	cfg.Models = map[types.Model]types.ModelCfg{"bonsai": {Slots: slots, CtxPool: pool}}
+	return cfg
+}
+
+func llmCtx(id string, prio types.Priority, model types.Model, ctx int) types.AcquireSpec {
+	spec := llm(id, prio, model)
+	spec.CtxTokens = ctx
+	return spec
+}
+
+func TestCoAdmitSecondSameModelRequest(t *testing.T) {
+	s, _, ev := newTestScheduler(t, coConfig(2, 0))
+	a := s.Acquire(llm("a", 40, "bonsai"))
+	b := s.Acquire(llm("b", 40, "bonsai"))
+	if !isGranted(a) || !isGranted(b) {
+		t.Fatal("both same-model requests should run together with slots=2")
+	}
+	snap := s.Snapshot()
+	if len(snap.Holders) != 2 || snap.Holder == nil || snap.Holder.ID != "a" {
+		t.Fatalf("snapshot holders = %+v, holder = %+v", snap.Holders, snap.Holder)
+	}
+	if len(ev.calls()) != 0 {
+		t.Fatalf("co-admission must not evict, got %v", ev.calls())
+	}
+}
+
+func TestCoAdmitThirdWaitsFIFO(t *testing.T) {
+	s, _, _ := newTestScheduler(t, coConfig(2, 0))
+	a := s.Acquire(llm("a", 40, "bonsai"))
+	b := s.Acquire(llm("b", 40, "bonsai"))
+	c := s.Acquire(llm("c", 40, "bonsai"))
+	d := s.Acquire(llm("d", 40, "bonsai"))
+	if !isGranted(a) || !isGranted(b) || isGranted(c) || isGranted(d) {
+		t.Fatal("only two slots: a and b run, c and d wait")
+	}
+	b.Release()
+	if !isGranted(c) || isGranted(d) {
+		t.Fatal("c (FIFO) should take the freed slot before d")
+	}
+	a.Release()
+	if !isGranted(d) {
+		t.Fatal("d should join after a releases")
+	}
+}
+
+func TestCoAdmitHigherPriorityOtherModelBlocksJoins(t *testing.T) {
+	s, _, ev := newTestScheduler(t, coConfig(3, 0))
+	a := s.Acquire(llm("a", 40, "bonsai"))
+	other := s.Acquire(llm("o", 50, "qwen"))
+	late := s.Acquire(llm("late", 40, "bonsai"))
+	if !isGranted(a) || isGranted(other) || isGranted(late) {
+		t.Fatal("a higher-priority waiter at the front must block further joins")
+	}
+	a.Release()
+	if !isGranted(other) {
+		t.Fatal("other model should be granted once holders drain")
+	}
+	if got := ev.calls(); len(got) != 1 || got[0] != "bonsai" {
+		t.Fatalf("expected bonsai evicted once, got %v", got)
+	}
+	if isGranted(late) {
+		t.Fatal("late must wait behind the other model")
+	}
+}
+
+func TestLeaseWaitsForAllLLMHoldersThenRunsAlone(t *testing.T) {
+	s, _, _ := newTestScheduler(t, coConfig(2, 0))
+	a := s.Acquire(llm("a", 40, "bonsai"))
+	b := s.Acquire(llm("b", 40, "bonsai"))
+	l := s.Acquire(lease("l", 50))
+	c := s.Acquire(llm("c", 40, "bonsai"))
+	if isRevoked(a) || isRevoked(b) {
+		t.Fatal("LLM holders are never revoked")
+	}
+	a.Release()
+	if isGranted(l) || isGranted(c) {
+		t.Fatal("lease waits for every holder; c may not jump the lease")
+	}
+	b.Release()
+	if !isGranted(l) {
+		t.Fatal("lease should run once all LLM holders released")
+	}
+	if isGranted(c) {
+		t.Fatal("nothing joins a lease")
+	}
+	l.Release()
+	if !isGranted(c) {
+		t.Fatal("c runs after the lease")
+	}
+}
+
+func TestBudgetBlocksPairThatDoesNotFit(t *testing.T) {
+	s, _, _ := newTestScheduler(t, coConfig(2, 1000))
+	a := s.Acquire(llmCtx("a", 40, "bonsai", 700))
+	b := s.Acquire(llmCtx("b", 40, "bonsai", 400))
+	if !isGranted(a) || isGranted(b) {
+		t.Fatal("700+400 > 1000: b must wait")
+	}
+	a.Release()
+	if !isGranted(b) {
+		t.Fatal("b runs after a")
+	}
+	c := s.Acquire(llmCtx("c", 40, "bonsai", 600))
+	if !isGranted(c) {
+		t.Fatal("400+600 fits exactly: c joins")
+	}
+}
+
+func TestBudgetSmallWaiterDoesNotJumpBlockedFront(t *testing.T) {
+	s, _, _ := newTestScheduler(t, coConfig(3, 1000))
+	a := s.Acquire(llmCtx("a", 40, "bonsai", 600))
+	big := s.Acquire(llmCtx("big", 40, "bonsai", 500))
+	small := s.Acquire(llmCtx("small", 40, "bonsai", 100))
+	if !isGranted(a) || isGranted(big) || isGranted(small) {
+		t.Fatal("small fits but must not skip the blocked big front waiter")
+	}
+	a.Release()
+	if !isGranted(big) || !isGranted(small) {
+		t.Fatal("after a releases, big runs and small joins it (600 total)")
+	}
+}
+
+func TestBudgetUnknownSizeRunsAlone(t *testing.T) {
+	s, _, _ := newTestScheduler(t, coConfig(2, 1000))
+	a := s.Acquire(llmCtx("a", 40, "bonsai", 100))
+	b := s.Acquire(llm("b", 40, "bonsai")) // CtxTokens 0 = whole pool
+	if !isGranted(a) || isGranted(b) {
+		t.Fatal("an unsized request is budgeted as the whole pool")
+	}
+}
+
+func TestJoinerDoesNotLowerWarmTier(t *testing.T) {
+	s, _, _ := newTestScheduler(t, coConfig(2, 0))
+	a := s.Acquire(llm("a", 40, "bonsai"))
+	b := s.Acquire(llm("b", 10, "bonsai"))
+	if !isGranted(a) || !isGranted(b) {
+		t.Fatal("both should run")
+	}
+	if got := s.Snapshot().WarmTier; got != 40 {
+		t.Fatalf("warm tier = %d, want 40 (a lower-tier joiner must not lower it)", got)
+	}
+}
+
+func TestHistoryHasOpenRecordPerHolder(t *testing.T) {
+	s, clk, _ := newTestScheduler(t, coConfig(2, 0))
+	spec := llm("a", 40, "bonsai")
+	spec.Alias = "bonsai-agent"
+	s.Acquire(spec)
+	s.Acquire(llm("b", 40, "bonsai"))
+	recs := s.History(clk.Now().Add(-time.Hour))
+	if len(recs) != 2 || recs[0].Alias != "bonsai-agent" {
+		t.Fatalf("history = %+v", recs)
+	}
+}

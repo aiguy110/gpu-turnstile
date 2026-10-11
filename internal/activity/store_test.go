@@ -17,7 +17,8 @@ func TestStoreLifecycleToolCallsAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	// Recent, so the reload below does not prune it by retention.
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	s.Begin(types.LLMActivity{ID: "r1", Name: "pi", Model: "qwen", EnqueuedAt: base})
 	s.Granted("r1", base.Add(time.Second))
 	s.Append("r1", types.ActivityDelta{Text: "hello ", ToolCall: &types.ToolCall{ID: "call-1", Name: "shell", Arguments: `{"cmd":"`}}, base.Add(2*time.Second))

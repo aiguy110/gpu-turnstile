@@ -186,7 +186,7 @@ func TestProxyObservesStreamingTextAndGenericToolCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	sched := &fakeScheduler{ticket: newFakeTicket(true)}
-	h := NewObserved(sched, &fakeKeyStore{anon: 1}, types.LlamaSwapCfg{BaseURL: upstream.URL}, store, testLogger())
+	h := NewObserved(sched, &fakeKeyStore{anon: 1}, types.LlamaSwapCfg{BaseURL: upstream.URL}, types.RoutingCfg{}, store, testLogger())
 	reqBody := `{"model":"m","messages":[{"role":"user","content":"say hi"}]}`
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody)))

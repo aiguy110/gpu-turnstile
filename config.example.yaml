@@ -46,6 +46,26 @@ activity:
   maxOutputBytes: 1048576
   retentionHours: 168
 
+# Optional per-model concurrency, keyed by the real llama-swap model name.
+# slots: max concurrent LLM requests (match llama-server --parallel; default 1).
+# ctxPool: the server's -c; co-admitted requests' estimated prompt+max_tokens
+# must fit in it (0 = no budget). Models without an entry are exclusive.
+# models:
+#   bonsai-2-27b: { slots: 2, ctxPool: 98304 }
+
+# Optional client-facing names that map onto a models: entry. The proxy rewrites
+# "model" to the backend, deep-merges inject into the body (inject wins), and
+# rejects requests whose estimate exceeds maxCtx with 400 context_length_exceeded.
+# defaultMaxTokens budgets requests that set no max_tokens.
+# virtual:
+#   bonsai-agent: { backend: bonsai-2-27b, maxCtx: 81920 }
+#   bonsai-mem:
+#     backend: bonsai-2-27b
+#     maxCtx: 12288
+#     defaultMaxTokens: 1024
+#     inject:
+#       chat_template_kwargs: { enable_thinking: false }
+
 # Priority tiers. Higher number = higher priority. Anonymous (unknown/missing
 # key) is admitted at anonymousPriority (below every named key by default).
 anonymousPriority: 0
