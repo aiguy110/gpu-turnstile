@@ -167,3 +167,18 @@ func TestOversizedBodyIsUnsized(t *testing.T) {
 		t.Errorf("oversized CtxTokens = %d, want 0 (budgeted as the whole pool)", spec.CtxTokens)
 	}
 }
+
+func TestInjectedMaxTokensIsBudgeted(t *testing.T) {
+	up := newUpstream(t)
+	sched := &fakeScheduler{ticket: newFakeTicket(true)}
+	routing := testRouting()
+	mem := routing.Virtual["bonsai-mem"]
+	mem.Inject = map[string]any{"max_tokens": 2048} // YAML decodes numbers as int
+	routing.Virtual["bonsai-mem"] = mem
+	h := NewObserved(sched, &fakeKeyStore{anon: 1}, types.LlamaSwapCfg{BaseURL: up.server.URL}, routing, nil, testLogger())
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"bonsai-mem","messages":[{"role":"user","content":"hi"}]}`)))
+	if got := sched.spec().CtxTokens; got != 9+2048 {
+		t.Errorf("CtxTokens = %d, want %d (injected max_tokens)", got, 9+2048)
+	}
+}

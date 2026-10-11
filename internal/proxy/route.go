@@ -113,10 +113,17 @@ func estimatePromptTokens(body map[string]any) int {
 // requestedMaxTokens reads max_tokens, max_completion_tokens, or n_predict.
 func requestedMaxTokens(body map[string]any) int {
 	for _, k := range []string{"max_tokens", "max_completion_tokens", "n_predict"} {
-		if n, ok := body[k].(json.Number); ok {
-			if v, err := n.Int64(); err == nil && v > 0 {
-				return int(v)
-			}
+		var v int64
+		switch n := body[k].(type) {
+		case json.Number: // from the client body
+			v, _ = n.Int64()
+		case int: // from YAML inject
+			v = int64(n)
+		case float64:
+			v = int64(n)
+		}
+		if v > 0 {
+			return int(v)
 		}
 	}
 	return 0
